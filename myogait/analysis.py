@@ -146,6 +146,7 @@ def analyze_gait(
         "spatiotemporal": _spatiotemporal(cycle_list, events, fps),
         "symmetry": _symmetry(cycle_list, angles, cycles.get("summary")),
         "variability": _variability(cycle_list),
+        "clinical_markers": _clinical_markers(cycle_list),
         "regularity": regularity_index(data),
         "harmonic_ratio": harmonic_ratio(data),
         "step_length": step_length(data, cycles, height_m),
@@ -301,6 +302,60 @@ def _symmetry(cycle_list: list, angles: dict, cycles_summary: Optional[dict] = N
     si["overall_si"] = round(float(np.mean(si_values)), 1) if si_values else 0.0
 
     return si
+
+
+def _clinical_markers(cycle_list: list) -> dict:
+    """Compute clinical gait markers used in incomplete-SCI and stroke
+    literature.
+
+    - ``ankle_at_hs_{side}``: mean ankle angle in the first 5 % of the
+      cycle (heel-strike region). A large negative value indicates
+      plantar-flexion at contact — i.e. residual foot-drop.
+    - ``peak_knee_swing_{side}``: peak knee flexion in the swing phase
+      (60-100 % of the cycle). Values markedly below the ~60° healthy
+      reference indicate stiff-knee gait.
+    - ``peak_hip_flexion_{side}``: peak hip flexion over the cycle.
+      Reduced values suggest limited swing propulsion.
+    - ``min_ankle_swing_{side}``: minimum ankle angle in swing
+      (60-100 %) — a proxy for toe-clearance limitation when combined
+      with foot-drop.
+
+    Returns None for a joint / side pair when no cycle has data.
+    """
+    result = {}
+    for side in ("left", "right"):
+        side_cycles = [c for c in cycle_list if c["side"] == side]
+        # Foot-drop marker: ankle angle at heel strike
+        ankle_hs = []
+        ankle_swing_min = []
+        for c in side_cycles:
+            v = c.get("angles_normalized", {}).get("ankle")
+            if v is not None and len(v) == 101:
+                ankle_hs.append(float(np.mean(v[:5])))
+                ankle_swing_min.append(float(np.min(v[60:])))
+        # Stiff-knee marker: peak knee flexion in swing (60-100 %)
+        knee_swing_peaks = []
+        for c in side_cycles:
+            v = c.get("angles_normalized", {}).get("knee")
+            if v is not None and len(v) == 101:
+                knee_swing_peaks.append(float(np.max(v[60:])))
+        # Peak hip flexion (whole cycle)
+        hip_peaks = []
+        for c in side_cycles:
+            v = c.get("angles_normalized", {}).get("hip")
+            if v is not None and len(v) == 101:
+                hip_peaks.append(float(np.max(v)))
+
+        result[f"ankle_at_hs_{side}"] = (
+            round(float(np.mean(ankle_hs)), 1) if ankle_hs else None)
+        result[f"min_ankle_swing_{side}"] = (
+            round(float(np.mean(ankle_swing_min)), 1) if ankle_swing_min else None)
+        result[f"peak_knee_swing_{side}"] = (
+            round(float(np.mean(knee_swing_peaks)), 1) if knee_swing_peaks else None)
+        result[f"peak_hip_flexion_{side}"] = (
+            round(float(np.mean(hip_peaks)), 1) if hip_peaks else None)
+
+    return result
 
 
 def _variability(cycle_list: list) -> dict:
