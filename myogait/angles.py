@@ -112,10 +112,16 @@ def _pelvis_tilt(
     pelvis = right_hip - left_hip
     dist = float(np.linalg.norm(pelvis))
     if trunk_length is not None and trunk_length > 0:
-        if dist < 0.05 * trunk_length:
+        # Empirical threshold: in a genuine coronal (frontal) view the
+        # pelvis-width / trunk-length ratio is typically 0.5-0.7.  In a
+        # sagittal view the ratio is 0.1-0.4 depending on the 2D vs 3D-
+        # aware backbone (Sapiens 2 reports ~0.35-0.40 because it knows
+        # about the near/far hip offset in the walking direction).  A
+        # 0.45 cut cleanly separates the two.
+        if dist < 0.45 * trunk_length:
             return np.nan
     else:
-        if dist < 0.02:
+        if dist < 0.15:
             return np.nan
     horizontal = np.array([1.0, 0.0])
     angle = _angle_between(horizontal, pelvis)
