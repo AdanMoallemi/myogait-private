@@ -46,6 +46,7 @@ from .angles import (
 )
 from .corrections import (
     apply_perspective_correction,
+    apply_linear_detrend,
     apply_ankle_bias_correction,
     apply_hip_bias_correction,
     apply_knee_bias_correction,
@@ -174,6 +175,7 @@ __all__ = [
     "compute_frontal_angles",
     "foot_progression_angle",
     "apply_perspective_correction",
+    "apply_linear_detrend",
     "apply_ankle_bias_correction",
     "apply_hip_bias_correction",
     "apply_knee_bias_correction",

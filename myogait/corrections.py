@@ -239,6 +239,75 @@ def _apply_m1(theta_deg: float, cos_a: float, *, clip_deg: float = 80.0) -> floa
 # ── Public API ───────────────────────────────────────────────────────
 
 
+def apply_linear_detrend(
+    data: dict,
+    joints: Optional[List[str]] = None,
+) -> dict:
+    """Remove a linear drift from each joint-angle time series.
+
+    Sagittal recordings often show a slow offset drift over the video
+    (e.g. hip angle sliding by 10-30° from the first to the last cycle)
+    that is not a real gait signal but the projection of the subject's
+    distance to the camera changing across the frame. Fitting a line
+    ``y = a·t + b`` to each joint signal and subtracting the slope
+    removes that drift while preserving both the anatomical mean
+    (kept intact) and the per-cycle ROM (unchanged).
+
+    Parameters
+    ----------
+    data : dict
+        Pivot JSON dict that has been through ``compute_angles()``.
+    joints : list of str, optional
+        Joint keys to detrend.  Defaults to the six lower-limb angles
+        plus trunk: ``["hip_L", "hip_R", "knee_L", "knee_R",
+        "ankle_L", "ankle_R", "trunk_angle"]``.
+
+    Returns
+    -------
+    dict
+        The same *data* dict with detrended angles and
+        ``data["angles"]["linear_detrended"] = True`` set.
+
+    Notes
+    -----
+    * Safe to call once.  If already applied, the function is a no-op.
+    * Should be called AFTER perspective correction (``apply_perspective_correction``),
+      which removes the frame-by-frame angular effect of perspective;
+      this function then mops up the residual DC drift.
+    """
+    angles = data.get("angles", {})
+    if angles.get("linear_detrended"):
+        return data
+
+    frames = angles.get("frames", [])
+    if not frames:
+        return data
+
+    if joints is None:
+        joints = ["hip_L", "hip_R", "knee_L", "knee_R",
+                  "ankle_L", "ankle_R", "trunk_angle"]
+
+    for key in joints:
+        vals = np.array(
+            [f.get(key) if f.get(key) is not None else np.nan for f in frames],
+            dtype=float,
+        )
+        mask = ~np.isnan(vals)
+        if mask.sum() < 20:
+            continue
+        idx = np.arange(len(vals))
+        slope, intercept = np.polyfit(idx[mask], vals[mask], 1)
+        trend = slope * idx + intercept
+        mean_v = float(np.mean(vals[mask]))
+        for i, f in enumerate(frames):
+            v = f.get(key)
+            if v is not None and not np.isnan(v):
+                f[key] = float(vals[i] - trend[i] + mean_v)
+
+    angles["linear_detrended"] = True
+    return data
+
+
 def apply_perspective_correction(data: dict) -> dict:
     """Apply zero-parameter M1 perspective correction to hip and knee.
 
