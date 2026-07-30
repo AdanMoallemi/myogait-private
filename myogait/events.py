@@ -126,7 +126,7 @@ def _detect_zeni(
     HS = ankle most ANTERIOR (peak of ankle_rel)
     TO = ankle most POSTERIOR (trough of ankle_rel)
     """
-    min_distance = max(1, int(min_cycle_duration * fps / 2))
+    min_distance = max(1, int(min_cycle_duration * fps))
 
     # Extract x-coordinates
     left_ankle_x = _fill_nan(_extract_landmark_series(frames, "LEFT_ANKLE", "x"))
@@ -225,7 +225,7 @@ def _detect_crossing(
     When left knee X crosses right knee X, it indicates mid-stance/swing
     transitions. HS occurs when the swinging leg passes the stance leg.
     """
-    min_distance = max(1, int(min_cycle_duration * fps / 2))
+    min_distance = max(1, int(min_cycle_duration * fps))
 
     left_knee_x = _fill_nan(_extract_landmark_series(frames, "LEFT_KNEE", "x"))
     right_knee_x = _fill_nan(_extract_landmark_series(frames, "RIGHT_KNEE", "x"))
@@ -309,7 +309,7 @@ def _detect_velocity(
     HS = foot y-velocity changes from downward to upward (foot hits ground).
     TO = foot y-velocity changes from upward to downward (foot lifts).
     """
-    min_distance = max(1, int(min_cycle_duration * fps / 2))
+    min_distance = max(1, int(min_cycle_duration * fps))
 
     results = {}
     for side, heel_name, toe_name in [
@@ -382,7 +382,7 @@ def _detect_oconnor(
     HS = heel forward velocity crosses zero from positive to negative.
     TO = heel forward velocity crosses zero from negative to positive.
     """
-    min_distance = max(1, int(min_cycle_duration * fps / 2))
+    min_distance = max(1, int(min_cycle_duration * fps))
 
     left_hip_x = _fill_nan(_extract_landmark_series(frames, "LEFT_HIP", "x"))
     right_hip_x = _fill_nan(_extract_landmark_series(frames, "RIGHT_HIP", "x"))
