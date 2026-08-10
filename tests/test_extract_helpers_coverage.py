@@ -65,7 +65,7 @@ def test_enrich_foot_landmarks_from_wholebody133():
     assert "LEFT_HEEL" in frame["landmarks"]
 
 
-def test_flip_auxiliary_mirrors_and_swaps_pairs():
+def test_flip_auxiliary_mirrors_x():
     from myogait.extract import _flip_auxiliary
 
     names = ["left_eye", "right_eye", "nose"]
@@ -79,10 +79,9 @@ def test_flip_auxiliary_mirrors_and_swaps_pairs():
     )
 
     flipped = _flip_auxiliary(aux, names)
-    # left/right swapped after mirror
-    assert flipped[0, 0] == pytest.approx(1.0 - aux[1, 0])
-    assert flipped[1, 0] == pytest.approx(1.0 - aux[0, 0])
-    # center point only mirrored
+    # X coordinate mirrored, anatomical indices preserved
+    assert flipped[0, 0] == pytest.approx(1.0 - aux[0, 0])
+    assert flipped[1, 0] == pytest.approx(1.0 - aux[1, 0])
     assert flipped[2, 0] == pytest.approx(0.5)
 
 

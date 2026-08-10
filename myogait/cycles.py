@@ -137,7 +137,7 @@ def _normalize_to_percent(values: np.ndarray, n_points: int = 101) -> np.ndarray
     """Resample a variable-length array to n_points (0-100%)."""
     original = np.linspace(0, 100, len(values))
     target = np.linspace(0, 100, n_points)
-    return np.interp(target, original, values)
+    return np.asarray(np.interp(target, original, values))
 
 
 def segment_cycles(
@@ -196,11 +196,17 @@ def segment_cycles(
         to_list = events.get(f"{side}_to", [])
 
         if len(hs_list) < 2:
-            logger.info(f"Not enough HS events for {side} side ({len(hs_list)})")
-            continue
+            opp_side = "right" if side == "left" else "left"
+            opp_hs = events.get(f"{opp_side}_hs", [])
+            if len(opp_hs) >= 2:
+                logger.info(f"Using contralateral cycle window for {side} side")
+                hs_sorted = sorted(opp_hs, key=lambda e: e["frame"])
+            else:
+                logger.info(f"Not enough HS events for {side} side ({len(hs_list)})")
+                continue
+        else:
+            hs_sorted = sorted(hs_list, key=lambda e: e["frame"])
 
-        # Sort by frame
-        hs_sorted = sorted(hs_list, key=lambda e: e["frame"])
         to_sorted = sorted(to_list, key=lambda e: e["frame"])
 
         for i in range(len(hs_sorted) - 1):

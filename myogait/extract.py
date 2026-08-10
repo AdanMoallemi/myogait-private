@@ -14,7 +14,7 @@ extract
 import logging
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Dict, Any, Union
 
 import cv2
 import numpy as np
@@ -311,80 +311,25 @@ def _detect_direction(frames_landmarks: list) -> str:
 
 
 def _flip_landmarks(landmarks: np.ndarray) -> np.ndarray:
-    """Mirror landmarks horizontally and swap left/right labels.
+    """Mirror landmarks horizontally across image width (x' = 1.0 - x).
 
-    Args:
-        landmarks: (33, 3) array in MediaPipe format.
-
-    Returns:
-        Flipped array.
+    Preserves anatomical left/right landmark identities so downstream gait
+    analysis (angles, report, exports) accurately tracks the true body sides.
     """
     flipped = landmarks.copy()
-    # Mirror x coordinate
     flipped[:, 0] = 1.0 - flipped[:, 0]
-
-    # Swap left/right pairs
-    for name in MP_LANDMARK_NAMES:
-        if not name.startswith("LEFT_"):
-            continue
-        right_name = name.replace("LEFT_", "RIGHT_")
-        if right_name not in MP_NAME_TO_INDEX:
-            continue
-        li = MP_NAME_TO_INDEX[name]
-        ri = MP_NAME_TO_INDEX[right_name]
-        flipped[li], flipped[ri] = flipped[ri].copy(), flipped[li].copy()
-
     return flipped
 
 
 def _flip_auxiliary(aux: np.ndarray, landmark_names: list) -> np.ndarray:
-    """Mirror auxiliary landmarks horizontally and swap left/right indices.
-
-    Args:
-        aux: (N, 3) array of auxiliary landmarks (x, y, confidence).
-        landmark_names: List of landmark name strings of length N, used to
-            identify left/right pairs for swapping.
-
-    Returns:
-        Flipped array with mirrored x and swapped left/right pairs.
-    """
+    """Mirror auxiliary landmarks horizontally across image width (x' = 1.0 - x)."""
     flipped = aux.copy()
-    # Mirror x coordinate
     flipped[:, 0] = 1.0 - flipped[:, 0]
-
-    # Build left/right swap pairs from landmark names
-    n = len(landmark_names)
-    visited = set()
-    for i, name in enumerate(landmark_names):
-        if i in visited:
-            continue
-        # Try multiple left/right naming conventions used in Goliath/WholeBody
-        partner_name = None
-        if "left_" in name:
-            partner_name = name.replace("left_", "right_")
-        elif "right_" in name:
-            partner_name = name.replace("right_", "left_")
-        elif name.startswith("l_"):
-            partner_name = "r_" + name[2:]
-        elif name.startswith("r_"):
-            partner_name = "l_" + name[2:]
-
-        if partner_name is None:
-            continue
-
-        # Find partner index
-        for j in range(n):
-            if j != i and landmark_names[j] == partner_name:
-                flipped[i], flipped[j] = flipped[j].copy(), flipped[i].copy()
-                visited.add(i)
-                visited.add(j)
-                break
-
     return flipped
 
 
 def extract(
-    video_path: str,
+    video_path: Union[str, Path],
     model: str = "mediapipe",
     max_frames: Optional[int] = None,
     flip_if_right: bool = True,
@@ -701,12 +646,11 @@ def extract(
         MP_NAME_TO_INDEX.get("LEFT_ANKLE", 27),
         MP_NAME_TO_INDEX.get("RIGHT_ANKLE", 28),
     ]
-    _EDGE = 0.02  # 2% margin from image border
-
-    _MIN_LEG_VIS = 0.3  # minimum visibility for each leg landmark
+    _EDGE = 0.005  # 0.5% margin from image border
+    _MIN_LEG_VIS = 0.05  # minimum visibility for each leg landmark (keeps distant frames)
 
     def _legs_visible(lm):
-        """Return True if all leg landmarks are detected with good confidence
+        """Return True if all leg landmarks are detected with confidence
         and not stuck at the image edge."""
         if lm is None:
             return False
@@ -732,15 +676,21 @@ def extract(
     frames = []
     for idx in range(first_det, last_det + 1):
         lm = raw_landmarks[idx]
-        frame_data = {
+        frame_data: Dict[str, Any] = {
             "frame_idx": idx,
             "time_s": round(idx / fps, 4) if fps > 0 else 0.0,
             "landmarks": {},
             "confidence": 0.0,
         }
         if lm is not None:
+            leg_vis = [lm[i, 2] for i in _LEG_INDICES if i < len(lm) and not np.isnan(lm[i, 2])]
             valid_vis = lm[:, 2][~np.isnan(lm[:, 2])]
-            frame_data["confidence"] = float(np.mean(valid_vis)) if len(valid_vis) > 0 else 0.0
+            if leg_vis:
+                frame_data["confidence"] = float(np.mean(leg_vis))
+            elif len(valid_vis) > 0:
+                frame_data["confidence"] = float(np.mean(valid_vis))
+            else:
+                frame_data["confidence"] = 0.0
             for i, name in enumerate(MP_LANDMARK_NAMES):
                 frame_data["landmarks"][name] = {
                     "x": float(lm[i, 0]),
@@ -807,7 +757,7 @@ def extract(
         _estimate_missing_foot_landmarks(frame_data)
 
     data["frames"] = frames
-    extraction_meta = {
+    extraction_meta: Dict[str, Any] = {
         "model": model,
         "model_detail": extractor.name,
         "keypoint_format": "mediapipe33",
@@ -822,10 +772,10 @@ def extract(
         extraction_meta["experimental"] = {
             "family": "video_degradation",
             "scope": "AIM benchmark only",
-            "source_fps": round(float(source_fps), 4),
-            "source_resolution": [int(source_width), int(source_height)],
-            "frame_stride": int(frame_stride),
-            "effective_fps": round(float(fps), 4),
+            "source_fps": round(source_fps, 4),
+            "source_resolution": [source_width, source_height],
+            "frame_stride": frame_stride,
+            "effective_fps": round(fps, 4),
             "config": exp_cfg,
         }
     if has_auxiliary:
@@ -930,8 +880,8 @@ def detect_treadmill(data: dict) -> dict:
 
     if data.get("extraction") is None:
         data["extraction"] = {}
-    data["extraction"]["treadmill"] = bool(detected)
-    data["extraction"]["treadmill_confidence"] = round(float(confidence), 3)
+    data["extraction"]["treadmill"] = detected
+    data["extraction"]["treadmill_confidence"] = round(confidence, 3)
 
     logger.info(
         f"Treadmill detection: {'treadmill' if detected else 'overground'} "
@@ -1025,7 +975,7 @@ def detect_multi_person(data: dict) -> dict:
     suspicious_frames.sort()
     has_warning = len(suspicious_frames) > 0
 
-    data["extraction"]["multi_person_warning"] = bool(has_warning)
+    data["extraction"]["multi_person_warning"] = has_warning
     data["extraction"]["suspicious_frames"] = suspicious_frames
 
     if has_warning:
@@ -1145,10 +1095,11 @@ def _correct_label_inversions(landmarks_list: list) -> tuple:
 
     result = [lm.copy() if lm is not None else None for lm in landmarks_list]
     for i, is_inv in enumerate(inversion_mask):
-        if is_inv and result[i] is not None:
+        frame = result[i]
+        if is_inv and frame is not None:
             for li, ri in all_pairs:
-                result[i][li], result[i][ri] = (
-                    result[i][ri].copy(), result[i][li].copy())
+                frame[li], frame[ri] = (
+                    frame[ri].copy(), frame[li].copy())
 
     # ── Pass 2: Per-pair velocity-based correction on corrected data ─
     # After Pass 1 fixes global L/R swaps, individual pairs may still
@@ -1240,6 +1191,9 @@ def _correct_label_inversions(landmarks_list: list) -> tuple:
                 prev_idx = i
                 continue
             p = result[prev_idx]
+            if p is None:
+                prev_idx = i
+                continue
             # Before: current positions
             total_vel_before += (
                 np.sum((p[li, :2] - curr[li, :2]) ** 2)
@@ -1247,8 +1201,8 @@ def _correct_label_inversions(landmarks_list: list) -> tuple:
             # After: apply proposed swap at frame i if flagged
             ci_l = curr[ri, :2] if pair_mask[i] else curr[li, :2]
             ci_r = curr[li, :2] if pair_mask[i] else curr[ri, :2]
-            pi_l = result[prev_idx][ri, :2] if pair_mask[prev_idx] else p[li, :2]
-            pi_r = result[prev_idx][li, :2] if pair_mask[prev_idx] else p[ri, :2]
+            pi_l = p[ri, :2] if pair_mask[prev_idx] else p[li, :2]
+            pi_r = p[li, :2] if pair_mask[prev_idx] else p[ri, :2]
             total_vel_after += (
                 np.sum((pi_l - ci_l) ** 2)
                 + np.sum((pi_r - ci_r) ** 2))
@@ -1263,9 +1217,10 @@ def _correct_label_inversions(landmarks_list: list) -> tuple:
         n_applied = 0
         pass2_swapped = set()
         for i, should_swap in enumerate(pair_mask):
-            if should_swap and result[i] is not None and not inversion_mask[i]:
-                result[i][li], result[i][ri] = (
-                    result[i][ri].copy(), result[i][li].copy())
+            frame = result[i]
+            if should_swap and frame is not None and not inversion_mask[i]:
+                frame[li], frame[ri] = (
+                    frame[ri].copy(), frame[li].copy())
                 inversion_mask[i] = True
                 n_applied += 1
                 pass2_swapped.add(i)
@@ -1279,7 +1234,7 @@ def _correct_label_inversions(landmarks_list: list) -> tuple:
             REF_L, REF_R = ref_pair
             for i in list(pass2_swapped):
                 lm = result[i]
-                if (REF_L < lm.shape[0] and REF_R < lm.shape[0]
+                if (lm is not None and REF_L < lm.shape[0] and REF_R < lm.shape[0]
                         and not np.any(np.isnan(
                             lm[[li, ri, REF_L, REF_R], :2]))):
                     d_same = (np.sum((lm[li, :2] - lm[REF_L, :2]) ** 2)
@@ -1287,8 +1242,8 @@ def _correct_label_inversions(landmarks_list: list) -> tuple:
                     d_cross = (np.sum((lm[li, :2] - lm[REF_R, :2]) ** 2)
                                + np.sum((lm[ri, :2] - lm[REF_L, :2]) ** 2))
                     if d_cross < d_same:
-                        result[i][li], result[i][ri] = (
-                            result[i][ri].copy(), result[i][li].copy())
+                        lm[li], lm[ri] = (
+                            lm[ri].copy(), lm[li].copy())
                         inversion_mask[i] = False
                         n_applied -= 1
                         n_reverted += 1
@@ -1417,7 +1372,7 @@ def detect_sagittal_alignment(data: dict, threshold_deg: float = 15.0) -> dict:
     ratio = float(np.mean(ratios))
     deviation_deg = float(np.degrees(np.arcsin(min(ratio, 1.0))))
     is_sagittal = deviation_deg < threshold_deg
-    confidence = float(min(1.0, len(ratios) / max(1, len(frames))))
+    confidence = min(1.0, len(ratios) / max(1, len(frames)))
 
     warning = None
     if not is_sagittal:
@@ -1513,7 +1468,7 @@ def auto_crop_roi(
     if output_path is not None:
         crop_w = x2 - x1
         crop_h = y2 - y1
-        fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+        fourcc = cv2.VideoWriter.fourcc(*"mp4v")
         writer = cv2.VideoWriter(output_path, fourcc, src_fps, (crop_w, crop_h))
 
         cap.set(cv2.CAP_PROP_POS_FRAMES, 0)

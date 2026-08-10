@@ -207,16 +207,38 @@ def render_skeleton_frame(
                     cv2.FONT_HERSHEY_SIMPLEX, 0.4, _COLOR_WHITE, 1, cv2.LINE_AA,
                 )
 
-    # Show event indicator
+    # Show event indicator banner
     if events:
         ev_type = events.get("type", "")
         ev_side = events.get("side", "")
-        label = f"{ev_type} ({ev_side})"
-        color = _COLOR_LEFT if ev_side == "left" else _COLOR_RIGHT
-        cv2.putText(
-            frame, label, (w // 2 - 40, 30),
-            cv2.FONT_HERSHEY_SIMPLEX, 0.8, color, 2, cv2.LINE_AA,
-        )
+        type_full = "HEEL STRIKE" if ev_type == "HS" else "TOE OFF" if ev_type == "TO" else ev_type
+        side_full = "LEFT" if ev_side == "left" else "RIGHT" if ev_side == "right" else ev_side
+        label = f"{type_full} ({side_full})"
+
+        color_bgr = _COLOR_LEFT if ev_side == "left" else _COLOR_RIGHT
+        font = cv2.FONT_HERSHEY_SIMPLEX
+        font_scale = max(0.8, w / 1600.0)
+        thickness = 2
+        (text_w, text_h), baseline = cv2.getTextSize(label, font, font_scale, thickness)
+
+        center_x = w // 2
+        margin = 12
+        box_x1 = center_x - (text_w // 2) - margin
+        box_y1 = 15
+        box_x2 = center_x + (text_w // 2) + margin
+        box_y2 = 15 + text_h + margin * 2
+
+        # Semi-transparent dark background card
+        overlay = frame.copy()
+        cv2.rectangle(overlay, (box_x1, box_y1), (box_x2, box_y2), (20, 20, 20), -1)
+        cv2.addWeighted(overlay, 0.8, frame, 0.2, 0, frame)
+        cv2.rectangle(frame, (box_x1, box_y1), (box_x2, box_y2), color_bgr, 2, cv2.LINE_AA)
+
+        # High-contrast text with black outline
+        text_x = center_x - (text_w // 2)
+        text_y = box_y1 + text_h + margin // 2 + 2
+        cv2.putText(frame, label, (text_x + 1, text_y + 1), font, font_scale, (0, 0, 0), thickness + 2, cv2.LINE_AA)
+        cv2.putText(frame, label, (text_x, text_y), font, font_scale, color_bgr, thickness, cv2.LINE_AA)
 
     return frame
 
@@ -385,7 +407,7 @@ def render_skeleton_video(
         _codecs += [c for c in ("XVID", "MJPG", "mp4v") if c != codec]
     writer = None
     for c in _codecs:
-        fourcc = cv2.VideoWriter_fourcc(*c)
+        fourcc = getattr(cv2, "VideoWriter_fourcc", cv2.VideoWriter.fourcc)(*c)
         writer = cv2.VideoWriter(output_path, fourcc, out_fps, (width, height))
         if writer.isOpened():
             break
@@ -424,11 +446,12 @@ def render_skeleton_video(
     # x coordinates so the skeleton aligns with the original video.
     was_flipped = data.get("extraction", {}).get("was_flipped", False)
 
-    # Build event lookup: frame_idx -> event info
+    # Build event lookup: frame_idx -> event info (holds display for ~0.35s)
     event_lookup: Dict[int, dict] = {}
     if show_events:
         events_dict = data.get("events", {})
         if events_dict:
+            display_duration = max(1, int(out_fps * 0.35))
             for key in ["left_hs", "right_hs", "left_to", "right_to"]:
                 ev_list = events_dict.get(key, [])
                 side = "left" if key.startswith("left") else "right"
@@ -436,7 +459,8 @@ def render_skeleton_video(
                 for ev in ev_list:
                     fidx = ev.get("frame")
                     if fidx is not None:
-                        event_lookup[fidx] = {"type": ev_type, "side": side}
+                        for hold_f in range(fidx, fidx + display_duration):
+                            event_lookup[hold_f] = {"type": ev_type, "side": side}
 
     frame_idx = 0
     while True:
@@ -570,7 +594,7 @@ def render_stickfigure_animation(
     import matplotlib.pyplot as plt
     import matplotlib.animation as animation
 
-    format_lower = str(format).lower()
+    format_lower = format.lower()
     if format_lower not in {"gif", "mp4"}:
         raise ValueError(f"Unsupported format: {format!r}. Use 'gif' or 'mp4'.")
 
@@ -648,6 +672,7 @@ def render_stickfigure_animation(
 
         goliath_data = fd.get("goliath308") if use_goliath else None
 
+        lm = {}
         if goliath_data is not None:
             _plot_goliath_stickfigure(ax, goliath_data, line_color,
                                      alpha=1.0, lw=2)
@@ -788,11 +813,11 @@ def render_stickfigure_animation(
     )
 
     if format_lower == "gif":
-        writer_cls = animation.PillowWriter(fps=anim_fps)
+        writer_cls = animation.PillowWriter(fps=int(anim_fps))
         anim.save(output_path, writer=writer_cls)
     elif format_lower == "mp4":
         try:
-            writer_cls = animation.FFMpegWriter(fps=anim_fps)
+            writer_cls = animation.FFMpegWriter(fps=int(anim_fps))
             anim.save(output_path, writer=writer_cls)
         except Exception as exc:
             logger.warning(
@@ -801,13 +826,17 @@ def render_stickfigure_animation(
             )
             # Fallback: save frames with imageio
             try:
-                import imageio
+                import imageio  # type: ignore
                 frames_list = []
                 for i in range(n_render):
                     _draw_frame(i)
                     fig.canvas.draw()
-                    img = np.frombuffer(fig.canvas.tostring_rgb(), dtype=np.uint8)
-                    img = img.reshape(fig.canvas.get_width_height()[::-1] + (3,))
+                    if hasattr(fig.canvas, "buffer_rgba"):
+                        buf = getattr(fig.canvas, "buffer_rgba")()
+                        img = np.asarray(buf)[:, :, :3]
+                    else:
+                        img = np.frombuffer(getattr(fig.canvas, "tostring_rgb")(), dtype=np.uint8)
+                        img = img.reshape(fig.canvas.get_width_height()[::-1] + (3,))
                     frames_list.append(img)
                 imageio.mimwrite(output_path, frames_list, fps=anim_fps)
             except ImportError:

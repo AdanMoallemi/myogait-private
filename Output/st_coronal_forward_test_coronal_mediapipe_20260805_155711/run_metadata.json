@@ -1,0 +1,52 @@
+{
+  "timestamp": "2026-08-05T15:57:21.488929",
+  "myogait_version": "0.6.0",
+  "input": {
+    "video_path": "/Users/adanmoallemi/Documents/MyoGait/videos/15-JUL-2026_pilot_ST_coronal_forward_1.MP4",
+    "video_filename": "15-JUL-2026_pilot_ST_coronal_forward_1.MP4",
+    "plane": "coronal",
+    "subject_id": "st_coronal_forward_test",
+    "subject_height_m": 1.73
+  },
+  "settings": {
+    "pose_model": "mediapipe",
+    "cutoff_frequency_hz": 5.0,
+    "filters": [
+      {
+        "type": "median",
+        "kernel_size": 5
+      },
+      {
+        "type": "butterworth",
+        "cutoff": 5.0
+      }
+    ],
+    "perspective_correction": true,
+    "linear_detrending": true,
+    "empirical_healthy_bias_corrections": false,
+    "events_detection_method": "zeni"
+  },
+  "results_summary": {
+    "cadence_steps_per_min": 110.7,
+    "stride_time_mean_s": 1.084,
+    "stride_time_std_s": 0.0,
+    "stance_pct_left": 53.8,
+    "stance_pct_right": null,
+    "overall_symmetry_index_pct": 33.6,
+    "gait_profile_score_gps": null,
+    "sagittal_deviation_index_sdi": {
+      "gdi_2d_left": 0.0,
+      "gdi_2d_right": 0.0,
+      "gdi_2d_overall": 0.0,
+      "note": "myogait Sagittal Deviation Index (SDI): a 2D sagittal-plane deviation index using 4 variables (hip, knee, ankle, trunk). Normal gait scores ~100; pathological gait scores below 100. This is NOT the GDI of Schwartz & Rozumalski (2008). Use for screening only."
+    },
+    "clinical_flags": [
+      "Asymmetry knee: SI=35.5% (>20%)",
+      "Asymmetry ankle: SI=51.9% (>20%)",
+      "Asymmetry stance_time: SI=74.5% (>20%)"
+    ]
+  },
+  "performance": {
+    "elapsed_seconds": 9.79
+  }
+}

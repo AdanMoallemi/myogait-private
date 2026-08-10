@@ -10,8 +10,13 @@ Covers:
 - Extended angles in .mot when present
 """
 
-import pytest
+import sys
 from pathlib import Path
+
+# Ensure the tests directory is on sys.path for conftest imports
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+import pytest
 
 from conftest import make_walking_data, make_walking_data_with_depth, run_full_pipeline
 
