@@ -440,7 +440,7 @@ def plot_summary(
     import os
     vid_path = data.get("meta", {}).get("video_path", "Gait Analysis")
     title = os.path.basename(vid_path) if vid_path != "Gait Analysis" else vid_path
-    
+
     fig.suptitle(
         title,
         fontsize=12, fontweight="bold", y=0.99,

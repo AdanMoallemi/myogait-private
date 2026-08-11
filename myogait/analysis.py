@@ -142,12 +142,12 @@ def analyze_gait(
     fps = data.get("meta", {}).get("fps", 30.0)
     events = data.get("events", {})
     angles = data.get("angles", {})
-    
+
     # Deep mask: clone cycles dict and filter to only the visible side
     masked_cycles = dict(cycles)
     if visible_side != "both":
         masked_cycles["cycles"] = [c for c in cycles.get("cycles", []) if c["side"] == visible_side]
-    
+
     cycle_list = masked_cycles.get("cycles", [])
 
     stats = {

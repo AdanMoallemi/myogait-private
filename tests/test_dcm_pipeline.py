@@ -2,17 +2,14 @@
 
 import sys
 from pathlib import Path
-import pytest
-import tempfile
 
 # Ensure tests directory and root directory are on sys.path
 root_dir = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(root_dir))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from conftest import make_walking_data
-import dcm_pipeline
-from dcm_pipeline import run_dcm_pipeline
+from conftest import make_walking_data  # noqa: E402
+import dcm_pipeline  # noqa: E402
 
 
 def test_dcm_pipeline_imports():
@@ -81,7 +78,7 @@ def test_dcm_pipeline_export_generation(tmp_path):
         detect_events,
         segment_cycles,
         analyze_gait,
-        save_json,
+
     )
     from myogait.scores import (
         gait_variable_scores,
@@ -134,7 +131,7 @@ def test_dcm_pipeline_folder_structure_and_metadata(tmp_path):
     """Test that README.md and run_metadata.json are generated cleanly."""
     from dcm_pipeline import _write_run_readme, _write_run_metadata
 
-    data = make_walking_data(n_frames=90, fps=30.0)
+    _data = make_walking_data(n_frames=90, fps=30.0)  # noqa: F841
     stats = {
         "spatiotemporal": {
             "cadence_steps_per_min": 100.0,
@@ -160,6 +157,7 @@ def test_dcm_pipeline_folder_structure_and_metadata(tmp_path):
         events_method="zeni",
         stats=stats,
         elapsed_s=12.5,
+        apply_bias_correction=False,
     )
     _write_run_readme(
         output_dir=tmp_path,
@@ -172,6 +170,7 @@ def test_dcm_pipeline_folder_structure_and_metadata(tmp_path):
         events_method="zeni",
         stats=stats,
         elapsed_s=12.5,
+        apply_bias_correction=False,
     )
 
     readme = tmp_path / "README.md"
