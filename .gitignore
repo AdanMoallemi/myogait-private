@@ -14,3 +14,6 @@ run_pipeline.py
 *.xlsx
 *.pt
 *:Zone.Identifier
+
+# Local clinical data outputs
+Output/
