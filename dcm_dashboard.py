@@ -112,8 +112,13 @@ with tab_pipe:
         col3, col4 = st.columns(2)
         with col3:
             from myogait.events import EVENT_METHODS
+            from myogait.models import list_models
+            
             plane = st.selectbox("Recording Plane", ["sagittal", "coronal"], index=0)
-            model = st.selectbox("Pose Model", ["mediapipe", "sapiens2", "yolo"], index=0)
+            
+            available_models = list_models()
+            model = st.selectbox("Pose Model", available_models, index=available_models.index("mediapipe") if "mediapipe" in available_models else 0)
+            
             cutoff_hz = st.slider("Low-pass Filter Cutoff (Hz)", 1.0, 10.0, 5.0, 0.5)
             events_method = st.selectbox("Gait Event Method", list(EVENT_METHODS.keys()), index=0, help="Standard: zeni, crossing, velocity, oconnor.\nAdvanced (gk_): Deep learning and literature models (e.g. gk_ensemble for multi-model voting).")
             
@@ -221,10 +226,36 @@ with tab_pipe:
                             cl, cr = st.columns(2)
                             cyc_l = run_out_dir / "plots" / "cycles_left.png"
                             cyc_r = run_out_dir / "plots" / "cycles_right.png"
+                            skipped_left = None
+                            skipped_right = None
+                            try:
+                                with open(run_out_dir / "run_metadata.json", "r", encoding="utf-8") as f:
+                                    meta = json.load(f)
+                                skipped = meta.get("skipped_sides", [])
+                                for s in skipped:
+                                    if s.get("side") == "left":
+                                        skipped_left = s
+                                    elif s.get("side") == "right":
+                                        skipped_right = s
+                            except Exception:
+                                pass
+
                             with cl:
-                                if visible_side in ["both", "left"] and cyc_l.exists(): st.image(str(cyc_l), caption="Left Cycles")
+                                if visible_side in ["both", "left"]:
+                                    if cyc_l.exists():
+                                        st.image(str(cyc_l), caption="Left Cycles")
+                                    elif skipped_left:
+                                        st.info("Left cycles unavailable — insufficient heel-strike events detected in this recording.")
+                                    else:
+                                        st.info("No cycle data available for this side.")
                             with cr:
-                                if visible_side in ["both", "right"] and cyc_r.exists(): st.image(str(cyc_r), caption="Right Cycles")
+                                if visible_side in ["both", "right"]:
+                                    if cyc_r.exists():
+                                        st.image(str(cyc_r), caption="Right Cycles")
+                                    elif skipped_right:
+                                        st.info("Right cycles unavailable — insufficient heel-strike events detected in this recording.")
+                                    else:
+                                        st.info("No cycle data available for this side.")
 
                         # Video
                         st.header("3. Skeleton Overlay Video")

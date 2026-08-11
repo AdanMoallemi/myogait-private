@@ -104,6 +104,7 @@ def _write_run_metadata(
     visible_side: str = "both",
     enable_bilateral: bool = True,
     experimenter: str = "",
+    skipped_sides: list = None,
 ) -> Path:
     """Save machine-readable run configuration and clinical summary JSON."""
     meta_path = output_dir / "run_metadata.json"
@@ -151,6 +152,7 @@ def _write_run_metadata(
             "sagittal_deviation_index_sdi": stats.get("sdi"),
             "clinical_flags": stats.get("pathology_flags", []),
         },
+        "skipped_sides": skipped_sides or [],
         "performance": {
             "elapsed_seconds": round(elapsed_s, 2),
         },
@@ -175,6 +177,7 @@ def _write_run_readme(
     visible_side: str = "both",
     enable_bilateral: bool = True,
     experimenter: str = "",
+    skipped_sides: list = None,
 ) -> Path:
     """Generate human-readable Markdown README documenting the run settings & findings."""
     readme_path = output_dir / "README.md"
@@ -194,6 +197,17 @@ def _write_run_readme(
 
     flags = stats.get("pathology_flags", [])
     flags_formatted = "\n".join([f"- ⚠️ **{f}**" for f in flags]) if flags else "- None detected within standard thresholds."
+
+    skipped = skipped_sides or []
+    if skipped:
+        skipped_formatted = "\n".join([
+            f"**Cycle Analysis Warning**: {s.get('side', 'unknown').capitalize()} side skipped — "
+            f"insufficient heel-strike events (n={s.get('n_hs', 0)}). "
+            f"{s.get('side', 'unknown').capitalize()}-side outputs are unavailable for this recording."
+            for s in skipped
+        ])
+    else:
+        skipped_formatted = "**Cycle Analysis**: Both sides segmented normally."
 
     content = f"""# DCM Gait Analysis Run Report
 
@@ -224,6 +238,8 @@ def _write_run_readme(
 
 ### Pathological Gait Flags
 {flags_formatted}
+
+{skipped_formatted}
 
 ---
 
@@ -453,6 +469,15 @@ def run_dcm_pipeline(
 
     n_cycles = len(cycles_result.get("cycles", []))
     logger.info(f"      Identified {n_cycles} valid gait cycles.")
+    
+    skipped_sides = cycles_result.get("skipped_sides", [])
+    for skipped in skipped_sides:
+        s = skipped.get("side", "unknown").capitalize()
+        n_hs = skipped.get("n_hs", 0)
+        logger.warning(
+            f"      {s} side: no cycle analysis possible (insufficient heel-strike events, n_hs={n_hs}). "
+            f"{s}-side plots, CSVs, and statistics will be unavailable."
+        )
 
     # -------------------------------------------------------------------------
     # 6. Biomechanical & Clinical Pathology Analysis
@@ -627,6 +652,7 @@ def run_dcm_pipeline(
         visible_side=visible_side,
         enable_bilateral=enable_bilateral,
         experimenter=experimenter,
+        skipped_sides=skipped_sides,
     )
     _write_run_readme(
         output_dir=out_p,
@@ -643,6 +669,7 @@ def run_dcm_pipeline(
         visible_side=visible_side,
         enable_bilateral=enable_bilateral,
         experimenter=experimenter,
+        skipped_sides=skipped_sides,
     )
     logger.info("      Generated run documentation: README.md & run_metadata.json")
 

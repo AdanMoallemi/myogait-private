@@ -176,7 +176,76 @@ def test_dcm_pipeline_folder_structure_and_metadata(tmp_path):
     readme = tmp_path / "README.md"
     meta = tmp_path / "run_metadata.json"
 
-    assert readme.exists() and "DCM Gait Analysis Run Report" in readme.read_text(encoding="utf-8")
-    assert meta.exists() and "myogait_version" in meta.read_text(encoding="utf-8")
+    readme_text = readme.read_text(encoding="utf-8")
+    assert readme.exists() and "DCM Gait Analysis Run Report" in readme_text
+    assert "**Cycle Analysis**: Both sides segmented normally." in readme_text
+
+    meta_text = meta.read_text(encoding="utf-8")
+    assert meta.exists() and "myogait_version" in meta_text
+    import json
+    meta_json = json.loads(meta_text)
+    assert meta_json.get("skipped_sides") == []
+
+
+def test_dcm_pipeline_folder_structure_and_metadata_skipped_sides(tmp_path):
+    """Test that README.md and run_metadata.json handle skipped sides correctly."""
+    from dcm_pipeline import _write_run_readme, _write_run_metadata
+    import json
+
+    _data = make_walking_data(n_frames=90, fps=30.0)  # noqa: F841
+    stats = {
+        "spatiotemporal": {
+            "cadence_steps_per_min": 100.0,
+            "stride_time_mean_s": 1.2,
+            "stride_time_std_s": 0.05,
+            "stance_pct_left": 60.0,
+            "stance_pct_right": 60.0,
+        },
+        "symmetry": {"overall_si": 2.5},
+        "gps": {"gps_2d_overall": 5.5},
+        "sdi": {"gdi_2d_overall": 95.0},
+        "pathology_flags": [],
+    }
+
+    skipped_sides = [{"side": "right", "reason": "insufficient_hs_events", "n_hs": 1}]
+
+    _write_run_metadata(
+        output_dir=tmp_path,
+        video_path="patient01.mp4",
+        plane="sagittal",
+        subject_id="DCM_001",
+        subject_height_m=1.75,
+        model="mediapipe",
+        cutoff_hz=5.0,
+        events_method="zeni",
+        stats=stats,
+        elapsed_s=12.5,
+        apply_bias_correction=False,
+        skipped_sides=skipped_sides,
+    )
+    _write_run_readme(
+        output_dir=tmp_path,
+        video_path="patient01.mp4",
+        plane="sagittal",
+        subject_id="DCM_001",
+        subject_height_m=1.75,
+        model="mediapipe",
+        cutoff_hz=5.0,
+        events_method="zeni",
+        stats=stats,
+        elapsed_s=12.5,
+        apply_bias_correction=False,
+        skipped_sides=skipped_sides,
+    )
+
+    readme = tmp_path / "README.md"
+    meta = tmp_path / "run_metadata.json"
+    
+    readme_text = readme.read_text(encoding="utf-8")
+    assert "Cycle Analysis Warning" in readme_text
+    assert "Right side skipped" in readme_text
+
+    meta_json = json.loads(meta.read_text(encoding="utf-8"))
+    assert meta_json.get("skipped_sides") == skipped_sides
 
 
