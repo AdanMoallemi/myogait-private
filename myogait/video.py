@@ -104,6 +104,7 @@ def render_skeleton_frame(
     line_thickness: int = 2,
     dot_radius: int = 4,
     darken: float = 1.0,
+    visible_side: str = "both",
 ) -> np.ndarray:
     """Draw landmarks and skeleton connections on an image.
 
@@ -171,6 +172,13 @@ def render_skeleton_frame(
 
     # Draw connections
     for name_a, name_b in SKELETON_CONNECTIONS:
+        if visible_side != "both":
+            skip = False
+            for n in (name_a, name_b):
+                if visible_side == "left" and "RIGHT" in n: skip = True
+                if visible_side == "right" and "LEFT" in n: skip = True
+            if skip: continue
+            
         if name_a in pts and name_b in pts:
             if skeleton_color == "auto":
                 color = _connection_color(name_a, name_b)
@@ -181,6 +189,8 @@ def render_skeleton_frame(
 
     # Draw landmarks (circles)
     for name, pt in pts.items():
+        if visible_side == "left" and "RIGHT" in name: continue
+        if visible_side == "right" and "LEFT" in name: continue
         if skeleton_color == "auto":
             color = _side_color(name)
         else:
@@ -198,6 +208,10 @@ def render_skeleton_frame(
             "ankle_R": "RIGHT_ANKLE",
         }
         for angle_name, joint_name in _angle_joint_map.items():
+            # Mask angles from the non-visible side
+            if visible_side == "left" and "_R" in angle_name: continue
+            if visible_side == "right" and "_L" in angle_name: continue
+            
             val = angles.get(angle_name)
             if val is not None and joint_name in pts:
                 px, py = pts[joint_name]
@@ -211,34 +225,41 @@ def render_skeleton_frame(
     if events:
         ev_type = events.get("type", "")
         ev_side = events.get("side", "")
-        type_full = "HEEL STRIKE" if ev_type == "HS" else "TOE OFF" if ev_type == "TO" else ev_type
-        side_full = "LEFT" if ev_side == "left" else "RIGHT" if ev_side == "right" else ev_side
-        label = f"{type_full} ({side_full})"
-
-        color_bgr = _COLOR_LEFT if ev_side == "left" else _COLOR_RIGHT
-        font = cv2.FONT_HERSHEY_SIMPLEX
-        font_scale = max(0.8, w / 1600.0)
-        thickness = 2
-        (text_w, text_h), baseline = cv2.getTextSize(label, font, font_scale, thickness)
-
-        center_x = w // 2
-        margin = 12
-        box_x1 = center_x - (text_w // 2) - margin
-        box_y1 = 15
-        box_x2 = center_x + (text_w // 2) + margin
-        box_y2 = 15 + text_h + margin * 2
-
-        # Semi-transparent dark background card
-        overlay = frame.copy()
-        cv2.rectangle(overlay, (box_x1, box_y1), (box_x2, box_y2), (20, 20, 20), -1)
-        cv2.addWeighted(overlay, 0.8, frame, 0.2, 0, frame)
-        cv2.rectangle(frame, (box_x1, box_y1), (box_x2, box_y2), color_bgr, 2, cv2.LINE_AA)
-
-        # High-contrast text with black outline
-        text_x = center_x - (text_w // 2)
-        text_y = box_y1 + text_h + margin // 2 + 2
-        cv2.putText(frame, label, (text_x + 1, text_y + 1), font, font_scale, (0, 0, 0), thickness + 2, cv2.LINE_AA)
-        cv2.putText(frame, label, (text_x, text_y), font, font_scale, color_bgr, thickness, cv2.LINE_AA)
+        
+        # Mask events from the non-visible side
+        skip_event = False
+        if visible_side == "left" and ev_side == "right": skip_event = True
+        if visible_side == "right" and ev_side == "left": skip_event = True
+        
+        if not skip_event:
+            type_full = "HEEL STRIKE" if ev_type == "HS" else "TOE OFF" if ev_type == "TO" else ev_type
+            side_full = "LEFT" if ev_side == "left" else "RIGHT" if ev_side == "right" else ev_side
+            label = f"{type_full} ({side_full})"
+    
+            color_bgr = _COLOR_LEFT if ev_side == "left" else _COLOR_RIGHT
+            font = cv2.FONT_HERSHEY_SIMPLEX
+            font_scale = max(0.8, w / 1600.0)
+            thickness = 2
+            (text_w, text_h), baseline = cv2.getTextSize(label, font, font_scale, thickness)
+    
+            center_x = w // 2
+            margin = 12
+            box_x1 = center_x - (text_w // 2) - margin
+            box_y1 = 15
+            box_x2 = center_x + (text_w // 2) + margin
+            box_y2 = 15 + text_h + margin * 2
+    
+            # Semi-transparent dark background card
+            overlay = frame.copy()
+            cv2.rectangle(overlay, (box_x1, box_y1), (box_x2, box_y2), (20, 20, 20), -1)
+            cv2.addWeighted(overlay, 0.8, frame, 0.2, 0, frame)
+            cv2.rectangle(frame, (box_x1, box_y1), (box_x2, box_y2), color_bgr, 2, cv2.LINE_AA)
+    
+            # High-contrast text with black outline
+            text_x = center_x - (text_w // 2)
+            text_y = box_y1 + text_h + margin // 2 + 2
+            cv2.putText(frame, label, (text_x + 1, text_y + 1), font, font_scale, (0, 0, 0), thickness + 2, cv2.LINE_AA)
+            cv2.putText(frame, label, (text_x, text_y), font, font_scale, color_bgr, thickness, cv2.LINE_AA)
 
     return frame
 
@@ -335,6 +356,7 @@ def render_skeleton_video(
     line_thickness: int = 2,
     dot_radius: int = 4,
     darken: float = 1.0,
+    visible_side: str = "both",
 ) -> str:
     """Overlay skeleton on every frame of a source video.
 
@@ -522,6 +544,7 @@ def render_skeleton_video(
                 line_thickness=line_thickness,
                 dot_radius=dot_radius,
                 darken=darken,
+                visible_side=visible_side,
             )
         elif darken != 1.0:
             # No skeleton on this frame, but still apply the darken so the

@@ -103,6 +103,8 @@ def analyze_gait(
     data: dict,
     cycles: dict,
     height_m: Optional[float] = None,
+    enable_bilateral: bool = True,
+    visible_side: str = "both",
 ) -> dict:
     """Compute comprehensive gait statistics.
 
@@ -140,18 +142,24 @@ def analyze_gait(
     fps = data.get("meta", {}).get("fps", 30.0)
     events = data.get("events", {})
     angles = data.get("angles", {})
-    cycle_list = cycles.get("cycles", [])
+    
+    # Deep mask: clone cycles dict and filter to only the visible side
+    masked_cycles = dict(cycles)
+    if visible_side != "both":
+        masked_cycles["cycles"] = [c for c in cycles.get("cycles", []) if c["side"] == visible_side]
+    
+    cycle_list = masked_cycles.get("cycles", [])
 
     stats = {
-        "spatiotemporal": _spatiotemporal(cycle_list, events, fps),
-        "symmetry": _symmetry(cycle_list, angles, cycles.get("summary")),
+        "spatiotemporal": _spatiotemporal(cycle_list, events, fps, enable_bilateral=enable_bilateral),
+        "symmetry": _symmetry(cycle_list, angles, masked_cycles.get("summary")) if enable_bilateral else {},
         "variability": _variability(cycle_list),
         "clinical_markers": _clinical_markers(cycle_list),
         "regularity": regularity_index(data),
         "harmonic_ratio": harmonic_ratio(data),
-        "step_length": step_length(data, cycles, height_m),
-        "walking_speed": walking_speed(data, cycles, height_m),
-        "pathologies": detect_pathologies(data, cycles),
+        "step_length": step_length(data, masked_cycles, height_m),
+        "walking_speed": walking_speed(data, masked_cycles, height_m),
+        "pathologies": detect_pathologies(data, masked_cycles),
         "pathology_flags": [],
     }
 
@@ -182,7 +190,7 @@ def _add_legacy_summary_aliases(stats: dict) -> None:
         stats["stance_pct"] = round(float(np.mean(stance_vals)), 1)
 
 
-def _spatiotemporal(cycle_list: list, events: dict, fps: float) -> dict:
+def _spatiotemporal(cycle_list: list, events: dict, fps: float, enable_bilateral: bool = True) -> dict:
     """Compute spatio-temporal parameters."""
     left_cycles = [c for c in cycle_list if c["side"] == "left"]
     right_cycles = [c for c in cycle_list if c["side"] == "right"]
@@ -239,7 +247,7 @@ def _spatiotemporal(cycle_list: list, events: dict, fps: float) -> dict:
 
     # Double support (clamped to 0 — negative values are physically impossible)
     double_support = None
-    if stance_left is not None and stance_right is not None:
+    if stance_left is not None and stance_right is not None and enable_bilateral:
         double_support = round(max(0, stance_left + stance_right - 100), 1)
 
     return {

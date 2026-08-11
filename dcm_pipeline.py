@@ -79,6 +79,7 @@ from myogait.export import (
     export_trc,
 )
 from myogait.report import generate_report
+from myogait.corrections import apply_hip_bias_correction, apply_knee_bias_correction
 
 logging.basicConfig(
     level=logging.INFO,
@@ -90,7 +91,7 @@ logger = logging.getLogger("dcm_pipeline")
 
 def _write_run_metadata(
     output_dir: Path,
-    video_path: str,
+    video_path: Optional[str],
     plane: str,
     subject_id: Optional[str],
     subject_height_m: Optional[float],
@@ -99,6 +100,10 @@ def _write_run_metadata(
     events_method: str,
     stats: dict,
     elapsed_s: float,
+    apply_bias_correction: bool,
+    visible_side: str = "both",
+    enable_bilateral: bool = True,
+    experimenter: str = "",
 ) -> Path:
     """Save machine-readable run configuration and clinical summary JSON."""
     meta_path = output_dir / "run_metadata.json"
@@ -113,9 +118,10 @@ def _write_run_metadata(
     meta = {
         "timestamp": datetime.datetime.now().isoformat(),
         "myogait_version": getattr(myogait, "__version__", "0.6.0"),
+        "experimenter": experimenter,
         "input": {
-            "video_path": str(Path(video_path).resolve()),
-            "video_filename": Path(video_path).name,
+            "video_path": str(Path(video_path).resolve()) if video_path else "Loaded from JSON",
+            "video_filename": Path(video_path).name if video_path else "Loaded from JSON",
             "plane": plane,
             "subject_id": subject_id or "Unspecified",
             "subject_height_m": subject_height_m,
@@ -129,8 +135,10 @@ def _write_run_metadata(
             ],
             "perspective_correction": True,
             "linear_detrending": True,
-            "empirical_healthy_bias_corrections": False,
+            "empirical_healthy_bias_corrections": apply_bias_correction,
             "events_detection_method": events_method,
+            "visible_side": visible_side,
+            "enable_bilateral": enable_bilateral,
         },
         "results_summary": {
             "cadence_steps_per_min": st.get("cadence_steps_per_min"),
@@ -154,7 +162,7 @@ def _write_run_metadata(
 
 def _write_run_readme(
     output_dir: Path,
-    video_path: str,
+    video_path: Optional[str],
     plane: str,
     subject_id: Optional[str],
     subject_height_m: Optional[float],
@@ -163,6 +171,10 @@ def _write_run_readme(
     events_method: str,
     stats: dict,
     elapsed_s: float,
+    apply_bias_correction: bool,
+    visible_side: str = "both",
+    enable_bilateral: bool = True,
+    experimenter: str = "",
 ) -> Path:
     """Generate human-readable Markdown README documenting the run settings & findings."""
     readme_path = output_dir / "README.md"
@@ -170,9 +182,15 @@ def _write_run_readme(
     sym = stats.get("symmetry", {})
     gps_val = stats.get("gps", {})
     if isinstance(gps_val, dict):
-        gps_overall = gps_val.get("gps_overall")
+        gps_overall = gps_val.get("gps_2d_overall")
     else:
         gps_overall = gps_val
+
+    sdi_val = stats.get("sdi", {})
+    if isinstance(sdi_val, dict):
+        sdi_overall = sdi_val.get("gdi_2d_overall")
+    else:
+        sdi_overall = sdi_val
 
     flags = stats.get("pathology_flags", [])
     flags_formatted = "\n".join([f"- ⚠️ **{f}**" for f in flags]) if flags else "- None detected within standard thresholds."
@@ -182,8 +200,11 @@ def _write_run_readme(
 **Run Timestamp**: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}  
 **Subject ID**: `{subject_id or 'Unspecified'}`  
 **Subject Height**: `{subject_height_m or 'Unspecified'} m`  
-**Video File**: `{Path(video_path).name}`  
+**Experimenter**: `{experimenter or 'Unspecified'}`  
+**Video File**: `{Path(video_path).name if video_path else 'Loaded from JSON'}`  
 **Recording Plane**: `{plane.capitalize()}`  
+**Visible Side**: `{visible_side}`  
+**Bilateral Enabled**: `{enable_bilateral}`  
 **Pose Model**: `{model}`  
 **Execution Time**: `{elapsed_s:.1f} s`  
 
@@ -199,7 +220,7 @@ def _write_run_readme(
 | **Right Stance Phase** | `{st.get('stance_pct_right', 'N/A')}` % | % Gait cycle |
 | **Overall Symmetry Index (SI)** | `{sym.get('overall_si', 'N/A')}` % | Normal < 10% |
 | **Gait Profile Score (GPS)** | `{gps_overall}` ° | Lower = closer to normative |
-| **Sagittal Deviation Index (SDI)** | `{stats.get('sdi', 'N/A')}` | Normal ~ 100 |
+| **Sagittal Deviation Index (SDI)** | `{sdi_overall}` | Normal ~ 100 |
 
 ### Pathological Gait Flags
 {flags_formatted}
@@ -214,7 +235,7 @@ def _write_run_readme(
 - **Joint Angle Reference**: `sagittal_vertical_axis` (Davis et al. vertical reference method)
 - **Perspective Correction**: `Enabled` (Zero-parameter physics-based cos α foreshortening fix)
 - **Linear Detrending**: `Enabled` (Removes camera-to-subject walk-along distance drift on 5m walkway)
-- **Empirical Healthy Bias Corrections**: `Bypassed` (**Preserves DCM pathological signatures**, e.g., foot drop, stiff knee)
+- **Empirical Healthy Bias Corrections**: `{"Applied" if apply_bias_correction else "Bypassed"}`
 - **Gait Event Detection**: `{events_method}` algorithm (Zeni et al. foot-to-pelvis displacement/velocity thresholding)
 
 ---
@@ -255,15 +276,19 @@ def _write_run_readme(
 
 
 def run_dcm_pipeline(
-    video_path: str,
-    output_dir: str,
+    video_path: Optional[str] = None,
+    input_json_path: Optional[str] = None,
+    output_dir: Optional[str] = None,
     model: str = "mediapipe",
     cutoff_hz: float = 5.0,
     plane: str = "sagittal",
     subject_id: Optional[str] = None,
     subject_height_m: Optional[float] = None,
     events_method: str = "zeni",
-    language: str = "en",
+    apply_bias_correction: bool = False,
+    visible_side: str = "both",
+    enable_bilateral: bool = True,
+    experimenter: str = "Unknown",
     generate_pdf: bool = True,
     generate_excel: bool = True,
     generate_csv: bool = True,
@@ -290,6 +315,10 @@ def run_dcm_pipeline(
         Subject height in meters for OpenSim scaling (e.g. 1.75).
     events_method : str
         Algorithm for gait event detection ('zeni', 'velocity', etc.).
+    visible_side : str
+        Which side to render in plots ('left', 'right', 'both').
+    enable_bilateral : bool
+        Whether to enable bilateral analysis.
     generate_pdf : bool
         Whether to produce a multi-page clinical PDF report.
     generate_excel : bool
@@ -306,13 +335,21 @@ def run_dcm_pipeline(
     dict
         Dictionary containing pipeline data, cycle segmentations, and statistics.
     """
-    video_p = Path(video_path)
-    if not video_p.exists():
-        raise FileNotFoundError(f"Input video not found: {video_path}")
+    if video_path:
+        video_p = Path(video_path)
+        if not video_p.exists():
+            raise FileNotFoundError(f"Input video not found: {video_path}")
+        subject_slug = subject_id or video_p.stem
+    elif input_json_path:
+        json_p = Path(input_json_path)
+        if not json_p.exists():
+            raise FileNotFoundError(f"Input JSON not found: {input_json_path}")
+        subject_slug = subject_id or json_p.stem
+    else:
+        raise ValueError("Must provide either video_path or input_json_path.")
 
     # Build automatic descriptive run folder: <subject_or_video>_<plane>_<model>_<YYYYMMDD_HHMMSS>
     timestamp_str = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-    subject_slug = subject_id or video_p.stem
     folder_name = f"{subject_slug}_{plane}_{model}_{timestamp_str}"
 
     base_out = Path(output_dir) if output_dir else Path("./Output")
@@ -334,27 +371,32 @@ def run_dcm_pipeline(
 
     t_start = time.time()
     logger.info("=" * 60)
-    logger.info(f"Starting DCM Pipeline for: {video_p.name}")
+    logger.info(f"Starting DCM Pipeline for: {video_path or input_json_path}")
     logger.info(f"Pose Model: {model} | Plane: {plane} | Filter Cutoff: {cutoff_hz} Hz")
     logger.info("=" * 60)
 
     # -------------------------------------------------------------------------
     # 1. Pose Extraction
     # -------------------------------------------------------------------------
-    logger.info("[1/7] Extracting pose landmarks...")
+    logger.info("[1/7] Extracting pose landmarks (or loading from JSON)...")
     t0 = time.time()
-    data = extract(
-        str(video_p),
-        model=model,
-        with_depth=False,  # Pure 2D pose extraction (avoids unauthenticated depth repo download)
-    )
-    if "meta" not in data:
-        data["meta"] = {}
-    data["meta"]["plane"] = plane
-
-    n_frames = len(data.get("frames", []))
-    detected = sum(1 for f in data.get("frames", []) if f.get("confidence", 0) > 0.3)
-    logger.info(f"      Extracted {n_frames} frames ({detected} detected, {100*detected/max(n_frames, 1):.1f}%) in {time.time()-t0:.1f}s")
+    
+    if input_json_path:
+        data = load_json(input_json_path)
+        logger.info(f"      Loaded pre-extracted data from {input_json_path} in {time.time()-t0:.1f}s")
+    else:
+        data = extract(
+            str(video_p),
+            model=model,
+            with_depth=False,  # Pure 2D pose extraction (avoids unauthenticated depth repo download)
+        )
+        if "meta" not in data:
+            data["meta"] = {}
+        data["meta"]["plane"] = plane
+    
+        n_frames = len(data.get("frames", []))
+        detected = sum(1 for f in data.get("frames", []) if f.get("confidence", 0) > 0.3)
+        logger.info(f"      Extracted {n_frames} frames ({detected} detected, {100*detected/max(n_frames, 1):.1f}%) in {time.time()-t0:.1f}s")
 
     # Set subject metadata if provided
     if subject_id or subject_height_m:
@@ -390,7 +432,7 @@ def run_dcm_pipeline(
     logger.info("[4/7] Applying Perspective Correction & Linear Detrending...")
     data = apply_perspective_correction(data)
     data = apply_linear_detrend(data)
-    # NOTE: Empirical healthy-adult bias corrections are explicitly bypassed.
+
 
     # -------------------------------------------------------------------------
     # 5. Gait Event Detection & Cycle Segmentation
@@ -398,6 +440,17 @@ def run_dcm_pipeline(
     logger.info(f"[5/7] Detecting gait events ({events_method}) and segmenting cycles...")
     data = detect_events(data, method=events_method)
     cycles_result = segment_cycles(data)
+    
+    if apply_bias_correction:
+        logger.info("      Applying empirical bias corrections (lasso)...")
+        data = apply_hip_bias_correction(data, cycles_result, model="v1")
+        data = apply_knee_bias_correction(data, cycles_result, model="v1")
+        # Re-segment cycles so the corrected continuous angles are chunked correctly
+        cycles_result = segment_cycles(data)
+    else:
+        # NOTE: Empirical healthy-adult bias corrections are explicitly bypassed.
+        pass
+
     n_cycles = len(cycles_result.get("cycles", []))
     logger.info(f"      Identified {n_cycles} valid gait cycles.")
 
@@ -405,12 +458,15 @@ def run_dcm_pipeline(
     # 6. Biomechanical & Clinical Pathology Analysis
     # -------------------------------------------------------------------------
     logger.info("[6/7] Analyzing spatiotemporal metrics, symmetry, & gait scores...")
-    stats = analyze_gait(data, cycles_result)
+    stats = analyze_gait(data, cycles_result, enable_bilateral=enable_bilateral, visible_side=visible_side)
 
     # Compute Gait Profile Scores (GPS / GVS)
-    gvs = gait_variable_scores(cycles_result)
-    gps_score = gait_profile_score_2d(cycles_result)
-    sdi_score = sagittal_deviation_index(cycles_result)
+    if enable_bilateral:
+        gvs = gait_variable_scores(cycles_result)
+        gps_score = gait_profile_score_2d(cycles_result)
+        sdi_score = sagittal_deviation_index(cycles_result)
+    else:
+        gvs, gps_score, sdi_score = {}, {}, {}
 
     stats["gvs"] = gvs
     stats["gps"] = gps_score
@@ -421,8 +477,10 @@ def run_dcm_pipeline(
     sym = stats.get("symmetry", {})
     logger.info(f"      Cadence: {st.get('cadence_steps_per_min', 'N/A')} steps/min")
     logger.info(f"      Stride Time: {st.get('stride_time_mean_s', 'N/A')} +/- {st.get('stride_time_std_s', 'N/A')} s")
-    logger.info(f"      Overall Symmetry Index: {sym.get('overall_si', 'N/A')}%")
-    logger.info(f"      Gait Profile Score (GPS): {gps_score.get('gps_overall', 'N/A') if isinstance(gps_score, dict) else gps_score}")
+    
+    if enable_bilateral:
+        logger.info(f"      Overall Symmetry Index: {sym.get('overall_si', 'N/A')}%")
+        logger.info(f"      Gait Profile Score (GPS): {gps_score.get('gps_overall', 'N/A') if isinstance(gps_score, dict) else gps_score}")
 
     flags = stats.get("pathology_flags", [])
     if flags:
@@ -437,6 +495,39 @@ def run_dcm_pipeline(
     # 7. Organized Exports & Clinical Reports
     # -------------------------------------------------------------------------
     logger.info("[7/7] Generating clinical outputs and exports...")
+
+    # --- REPORTING MASK ---
+    if visible_side != "both":
+        data = dict(data)
+        cycles_result = dict(cycles_result)
+        
+        # Scrub angles per-frame
+        if "angles" in data and "frames" in data["angles"]:
+            old_frames = data["angles"]["frames"]
+            data["angles"] = dict(data["angles"])
+            data["angles"]["frames"] = []
+            for af in old_frames:
+                new_af = {k: v for k, v in af.items() 
+                          if not (visible_side == "left" and ("_R" in k or k.endswith("_r"))) 
+                          and not (visible_side == "right" and ("_L" in k or k.endswith("_l")))}
+                data["angles"]["frames"].append(new_af)
+                          
+        # Scrub events
+        data["events"] = {k: v for k, v in data.get("events", {}).items() 
+                          if not (visible_side == "left" and "right" in k) 
+                          and not (visible_side == "right" and "left" in k)}
+                          
+        # Scrub cycles
+        cycles_result["cycles"] = [c for c in cycles_result.get("cycles", []) if c["side"] == visible_side]
+        
+        # Scrub cycles summary
+        if "summary" in cycles_result:
+            cycles_result["summary"] = dict(cycles_result["summary"])
+            if visible_side == "left":
+                cycles_result["summary"].pop("right", None)
+            elif visible_side == "right":
+                cycles_result["summary"].pop("left", None)
+    # ----------------------
 
     # A. Figures / Plots inside plots/
     if generate_plots:
@@ -454,24 +545,27 @@ def run_dcm_pipeline(
             plt.close(fig)
 
             for side in ("left", "right"):
-                fig = plot_cycles(cycles_result, side=side)
-                fig.savefig(plots_p / f"cycles_{side}.png", dpi=150, bbox_inches="tight")
-                plt.close(fig)
+                if visible_side in ("both", side):
+                    fig = plot_cycles(cycles_result, side=side)
+                    fig.savefig(plots_p / f"cycles_{side}.png", dpi=150, bbox_inches="tight")
+                    plt.close(fig)
 
             # Render color-coded skeleton overlay video
-            try:
-                from myogait.video import render_skeleton_video
-                overlay_mp4 = str(plots_p / "skeleton_overlay.mp4")
-                render_skeleton_video(
-                    video_path=str(video_p),
-                    data=data,
-                    output_path=overlay_mp4,
-                    show_angles=True,
-                    show_events=True,
-                )
-                logger.info(f"      Skeleton overlay video saved: {plots_p.relative_to(out_p)}/skeleton_overlay.mp4")
-            except Exception as e_vid:
-                logger.warning(f"      Could not render skeleton overlay video: {e_vid}")
+            if video_path:
+                try:
+                    from myogait.video import render_skeleton_video
+                    overlay_mp4 = str(plots_p / "skeleton_overlay.mp4")
+                    render_skeleton_video(
+                        video_path=str(video_p),
+                        data=data,
+                        output_path=overlay_mp4,
+                        show_angles=True,
+                        show_events=True,
+                        visible_side=visible_side,
+                    )
+                    logger.info(f"      Skeleton overlay video saved: {plots_p.relative_to(out_p)}/skeleton_overlay.mp4")
+                except Exception as e_vid:
+                    logger.warning(f"      Could not render skeleton overlay video: {e_vid}")
 
             logger.info(f"      Plots saved in: {plots_p.relative_to(out_p)}")
         except Exception as e:
@@ -481,7 +575,7 @@ def run_dcm_pipeline(
     if generate_pdf:
         pdf_path = str(report_p / "dcm_gait_report.pdf")
         try:
-            generate_report(data, cycles_result, stats, pdf_path, language=language)
+            generate_report(data, cycles_result, stats, pdf_path, language="en")
             logger.info(f"      PDF Report generated: {report_p.relative_to(out_p)}/dcm_gait_report.pdf")
         except Exception as e:
             logger.warning(f"      Could not generate PDF report: {e}")
@@ -529,6 +623,10 @@ def run_dcm_pipeline(
         events_method=events_method,
         stats=stats,
         elapsed_s=elapsed,
+        apply_bias_correction=apply_bias_correction,
+        visible_side=visible_side,
+        enable_bilateral=enable_bilateral,
+        experimenter=experimenter,
     )
     _write_run_readme(
         output_dir=out_p,
@@ -541,6 +639,10 @@ def run_dcm_pipeline(
         events_method=events_method,
         stats=stats,
         elapsed_s=elapsed,
+        apply_bias_correction=apply_bias_correction,
+        visible_side=visible_side,
+        enable_bilateral=enable_bilateral,
+        experimenter=experimenter,
     )
     logger.info("      Generated run documentation: README.md & run_metadata.json")
 

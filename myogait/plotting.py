@@ -437,8 +437,12 @@ def plot_summary(
         ax.text(0.5, 0.5, "No statistics (run analyze_gait())", ha="center", va="center",
                 transform=ax.transAxes, fontsize=10, color="gray")
 
+    import os
+    vid_path = data.get("meta", {}).get("video_path", "Gait Analysis")
+    title = os.path.basename(vid_path) if vid_path != "Gait Analysis" else vid_path
+    
     fig.suptitle(
-        data.get("meta", {}).get("video_path", "Gait Analysis"),
+        title,
         fontsize=12, fontweight="bold", y=0.99,
     )
     return fig
@@ -1670,7 +1674,6 @@ def animate_normative_comparison(
     from .normative import get_normative_band
     import matplotlib.animation as animation
 
-    fps = int(fps)
     if fps <= 0:
         raise ValueError(f"fps must be > 0, got {fps}")
 
@@ -1707,6 +1710,8 @@ def animate_normative_comparison(
         norm_mean = np.zeros(101)
         patient_mean = np.zeros(101)
         joint = "knee"
+
+    assert patient_mean is not None
 
     # Static normative elements
     ax.fill_between(x, norm_lower, norm_upper, color="#c0c0c0", alpha=0.5,
