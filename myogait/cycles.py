@@ -166,8 +166,10 @@ def segment_cycles(
     Returns
     -------
     dict
-        Keys: ``cycles`` (list of cycle dicts) and ``summary``
-        (per-side mean/std curves).
+        Keys: ``cycles`` (list of cycle dicts), ``summary``
+        (per-side mean/std curves), and ``skipped_sides`` (list of
+        dicts with ``side``, ``reason``, and ``n_hs`` for each side
+        that was skipped due to insufficient heel-strike events).
 
     Raises
     ------
@@ -189,6 +191,7 @@ def segment_cycles(
     angle_frames = angles.get("frames", [])
 
     cycles = []
+    skipped_sides: List[dict] = []
     cycle_id = 0
 
     for side in ("left", "right"):
@@ -196,17 +199,16 @@ def segment_cycles(
         to_list = events.get(f"{side}_to", [])
 
         if len(hs_list) < 2:
-            opp_side = "right" if side == "left" else "left"
-            opp_hs = events.get(f"{opp_side}_hs", [])
-            if len(opp_hs) >= 2:
-                logger.info(f"Using contralateral cycle window for {side} side")
-                hs_sorted = sorted(opp_hs, key=lambda e: e["frame"])
-            else:
-                logger.info(f"Not enough HS events for {side} side ({len(hs_list)})")
-                continue
-        else:
-            hs_sorted = sorted(hs_list, key=lambda e: e["frame"])
+            logger.info(f"Not enough HS events for {side} side ({len(hs_list)})")
+            skipped_sides.append({
+                "side": side,
+                "reason": "insufficient_hs_events",
+                "n_hs": len(hs_list),
+            })
+            continue
 
+        # Sort by frame
+        hs_sorted = sorted(hs_list, key=lambda e: e["frame"])
         to_sorted = sorted(to_list, key=lambda e: e["frame"])
 
         for i in range(len(hs_sorted) - 1):
@@ -296,8 +298,9 @@ def segment_cycles(
         f"R={summary.get('right', {}).get('n_cycles', 0)}"
     )
 
-    data["cycles_data"] = {"cycles": cycles, "summary": summary}
-    return {"cycles": cycles, "summary": summary}
+    result = {"cycles": cycles, "summary": summary, "skipped_sides": skipped_sides}
+    data["cycles_data"] = result
+    return result
 
 
 def ensemble_average(
