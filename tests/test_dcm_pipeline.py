@@ -176,7 +176,7 @@ def test_dcm_pipeline_folder_structure_and_metadata(tmp_path):
     readme = tmp_path / "README.md"
     meta = tmp_path / "run_metadata.json"
 
-    assert readme.exists() and "DCM Gait Analysis Run Report" in readme.read_text()
-    assert meta.exists() and "myogait_version" in meta.read_text()
+    assert readme.exists() and "DCM Gait Analysis Run Report" in readme.read_text(encoding="utf-8")
+    assert meta.exists() and "myogait_version" in meta.read_text(encoding="utf-8")
 
 
