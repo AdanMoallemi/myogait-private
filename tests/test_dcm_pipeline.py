@@ -240,7 +240,7 @@ def test_dcm_pipeline_folder_structure_and_metadata_skipped_sides(tmp_path):
 
     readme = tmp_path / "README.md"
     meta = tmp_path / "run_metadata.json"
-    
+
     readme_text = readme.read_text(encoding="utf-8")
     assert "Cycle Analysis Warning" in readme_text
     assert "Right side skipped" in readme_text
