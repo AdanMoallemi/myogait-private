@@ -1530,5 +1530,8 @@ def test_extract_trims_leading_trailing_no_detection():
         for fr in frames:
             assert len(fr["landmarks"]) > 0
             assert fr["confidence"] > 0
+            assert "leg_confidence" in fr
+            assert fr["leg_confidence"] > 0
     finally:
         os.unlink(tmp_path)
+

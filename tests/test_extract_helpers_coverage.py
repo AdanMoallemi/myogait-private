@@ -106,3 +106,81 @@ def test_side_label_convention_constant():
     assert flipped[11, 0] == pytest.approx(0.8)
     assert flipped[12, 0] == pytest.approx(0.2)
 
+
+def test_confidence_and_leg_confidence_distinct_means():
+    """Verify confidence uses all landmarks while leg_confidence uses leg landmarks."""
+    from myogait.extract import _compute_confidences
+    from myogait.constants import MP_NAME_TO_INDEX
+
+    leg_indices = [
+        MP_NAME_TO_INDEX["LEFT_HIP"],
+        MP_NAME_TO_INDEX["RIGHT_HIP"],
+        MP_NAME_TO_INDEX["LEFT_KNEE"],
+        MP_NAME_TO_INDEX["RIGHT_KNEE"],
+        MP_NAME_TO_INDEX["LEFT_ANKLE"],
+        MP_NAME_TO_INDEX["RIGHT_ANKLE"],
+    ]
+
+    lm = np.full((33, 3), 0.5, dtype=float)
+    # Set non-leg landmarks to high visibility (0.9)
+    lm[:, 2] = 0.9
+    # Set leg landmarks to low visibility (0.3)
+    for idx in leg_indices:
+        lm[idx, 2] = 0.3
+
+    conf, leg_conf = _compute_confidences(lm, leg_indices)
+
+    assert isinstance(conf, float)
+    assert isinstance(leg_conf, float)
+
+    # All-landmark mean: (27 * 0.9 + 6 * 0.3) / 33 = 26.1 / 33
+    expected_all_mean = float(np.mean(lm[:, 2]))
+    assert conf == pytest.approx(expected_all_mean)
+    assert leg_conf == pytest.approx(0.3)
+    assert conf != leg_conf
+
+
+def test_confidence_and_leg_confidence_no_valid_legs_fallback():
+    """When leg landmarks are all NaN, leg_confidence falls back to all-landmark confidence."""
+    from myogait.extract import _compute_confidences
+    from myogait.constants import MP_NAME_TO_INDEX
+
+    leg_indices = [
+        MP_NAME_TO_INDEX["LEFT_HIP"],
+        MP_NAME_TO_INDEX["RIGHT_HIP"],
+        MP_NAME_TO_INDEX["LEFT_KNEE"],
+        MP_NAME_TO_INDEX["RIGHT_KNEE"],
+        MP_NAME_TO_INDEX["LEFT_ANKLE"],
+        MP_NAME_TO_INDEX["RIGHT_ANKLE"],
+    ]
+
+    lm = np.full((33, 3), 0.5, dtype=float)
+    lm[:, 2] = 0.8
+    # Leg landmarks are NaN
+    for idx in leg_indices:
+        lm[idx, 2] = np.nan
+
+    conf, leg_conf = _compute_confidences(lm, leg_indices)
+
+    assert isinstance(conf, float)
+    assert isinstance(leg_conf, float)
+    assert conf == pytest.approx(0.8)
+    assert leg_conf == pytest.approx(0.8)  # Fell back to all-landmark mean
+
+
+def test_confidence_and_leg_confidence_empty_and_none():
+    """All-NaN and None inputs return 0.0 for both confidence fields."""
+    from myogait.extract import _compute_confidences
+
+    # All NaN
+    lm = np.full((33, 3), np.nan, dtype=float)
+    conf, leg_conf = _compute_confidences(lm)
+    assert conf == 0.0 and isinstance(conf, float)
+    assert leg_conf == 0.0 and isinstance(leg_conf, float)
+
+    # None
+    conf_none, leg_conf_none = _compute_confidences(None)
+    assert conf_none == 0.0 and isinstance(conf_none, float)
+    assert leg_conf_none == 0.0 and isinstance(leg_conf_none, float)
+
+

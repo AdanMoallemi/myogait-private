@@ -333,6 +333,43 @@ def _flip_auxiliary(aux: np.ndarray, landmark_names: list) -> np.ndarray:
     return flipped
 
 
+def _compute_confidences(
+    lm: Optional[np.ndarray],
+    leg_indices: Optional[list] = None,
+) -> tuple[float, float]:
+    """Compute (confidence, leg_confidence) for a landmark array.
+
+    confidence is the mean of all non-NaN landmark visibilities (0.0 if none).
+    leg_confidence is the mean of non-NaN leg landmark visibilities, falling
+    back to all-landmark mean, and 0.0 if neither is available.
+    """
+    if lm is None:
+        return 0.0, 0.0
+
+    valid_vis = lm[:, 2][~np.isnan(lm[:, 2])]
+    conf = float(np.mean(valid_vis)) if len(valid_vis) > 0 else 0.0
+
+    if leg_indices is None:
+        leg_indices = [
+            MP_NAME_TO_INDEX.get("LEFT_HIP", 23),
+            MP_NAME_TO_INDEX.get("RIGHT_HIP", 24),
+            MP_NAME_TO_INDEX.get("LEFT_KNEE", 25),
+            MP_NAME_TO_INDEX.get("RIGHT_KNEE", 26),
+            MP_NAME_TO_INDEX.get("LEFT_ANKLE", 27),
+            MP_NAME_TO_INDEX.get("RIGHT_ANKLE", 28),
+        ]
+
+    leg_vis = [lm[i, 2] for i in leg_indices if i < len(lm) and not np.isnan(lm[i, 2])]
+    if leg_vis:
+        leg_conf = float(np.mean(leg_vis))
+    elif len(valid_vis) > 0:
+        leg_conf = conf
+    else:
+        leg_conf = 0.0
+
+    return conf, leg_conf
+
+
 def extract(
     video_path: Union[str, Path],
     model: str = "mediapipe",
@@ -686,16 +723,12 @@ def extract(
             "time_s": round(idx / fps, 4) if fps > 0 else 0.0,
             "landmarks": {},
             "confidence": 0.0,
+            "leg_confidence": 0.0,
         }
         if lm is not None:
-            leg_vis = [lm[i, 2] for i in _LEG_INDICES if i < len(lm) and not np.isnan(lm[i, 2])]
-            valid_vis = lm[:, 2][~np.isnan(lm[:, 2])]
-            if leg_vis:
-                frame_data["confidence"] = float(np.mean(leg_vis))
-            elif len(valid_vis) > 0:
-                frame_data["confidence"] = float(np.mean(valid_vis))
-            else:
-                frame_data["confidence"] = 0.0
+            conf, leg_conf = _compute_confidences(lm, _LEG_INDICES)
+            frame_data["confidence"] = conf
+            frame_data["leg_confidence"] = leg_conf
             for i, name in enumerate(MP_LANDMARK_NAMES):
                 frame_data["landmarks"][name] = {
                     "x": float(lm[i, 0]),
