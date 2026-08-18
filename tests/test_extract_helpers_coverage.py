@@ -184,3 +184,59 @@ def test_confidence_and_leg_confidence_empty_and_none():
     assert leg_conf_none == 0.0 and isinstance(leg_conf_none, float)
 
 
+def test_extract_signature_defaults():
+    """Assert extract() defaults match upstream values and adaptive_leg_vis defaults to False."""
+    import inspect
+    from myogait.extract import extract
+
+    sig = inspect.signature(extract)
+    params = sig.parameters
+    assert params["edge_margin"].default == 0.02
+    assert params["min_leg_vis"].default == 0.30
+    assert params["adaptive_leg_vis"].default is False
+
+
+def test_compute_effective_min_leg_vis_helper():
+    """Test _compute_effective_min_leg_vis helper under various scenarios."""
+    from myogait.extract import _compute_effective_min_leg_vis
+    from myogait.constants import MP_NAME_TO_INDEX
+
+    leg_indices = [
+        MP_NAME_TO_INDEX["LEFT_HIP"],
+        MP_NAME_TO_INDEX["RIGHT_HIP"],
+        MP_NAME_TO_INDEX["LEFT_KNEE"],
+        MP_NAME_TO_INDEX["RIGHT_KNEE"],
+        MP_NAME_TO_INDEX["LEFT_ANKLE"],
+        MP_NAME_TO_INDEX["RIGHT_ANKLE"],
+    ]
+
+    # 1. adaptive_leg_vis=False returns min_leg_vis flat
+    lm_high = np.full((33, 3), 0.5, dtype=float)
+    lm_high[:, 2] = 0.9
+    assert _compute_effective_min_leg_vis([lm_high], min_leg_vis=0.30, adaptive_leg_vis=False) == pytest.approx(0.30)
+    assert _compute_effective_min_leg_vis([lm_high], min_leg_vis=0.05, adaptive_leg_vis=False) == pytest.approx(0.05)
+
+    # 2. High-median input yields a threshold above the floor
+    # Frames with leg_confidence ~0.8 -> 0.5 * 0.8 = 0.40 > 0.30
+    lm_80 = np.full((33, 3), 0.5, dtype=float)
+    lm_80[:, 2] = 0.80
+    raw_high = [lm_80] * 10
+    eff_high = _compute_effective_min_leg_vis(raw_high, min_leg_vis=0.30, adaptive_leg_vis=True, leg_indices=leg_indices)
+    assert eff_high == pytest.approx(0.40)
+
+    # 3. Low-median input clamps to the floor
+    # Frames with leg_confidence ~0.15 -> 0.5 * 0.15 = 0.075 < 0.30 -> clamps to 0.30
+    lm_15 = np.full((33, 3), 0.5, dtype=float)
+    lm_15[:, 2] = 0.15
+    raw_low = [lm_15] * 10
+    eff_low = _compute_effective_min_leg_vis(raw_low, min_leg_vis=0.30, adaptive_leg_vis=True, leg_indices=leg_indices)
+    assert eff_low == pytest.approx(0.30)
+
+    # 4. Empty list, None list, or all-NaN input falls back to the flat value
+    assert _compute_effective_min_leg_vis([], min_leg_vis=0.30, adaptive_leg_vis=True) == pytest.approx(0.30)
+    assert _compute_effective_min_leg_vis([None, None], min_leg_vis=0.30, adaptive_leg_vis=True) == pytest.approx(0.30)
+    lm_nan = np.full((33, 3), np.nan, dtype=float)
+    assert _compute_effective_min_leg_vis([lm_nan], min_leg_vis=0.30, adaptive_leg_vis=True) == pytest.approx(0.30)
+
+
+

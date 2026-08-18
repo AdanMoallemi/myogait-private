@@ -417,3 +417,14 @@ def test_dcm_pipeline_side_labels_unknown_direction(tmp_path):
     assert "occlusion" not in readme_text
 
 
+def test_dcm_pipeline_threshold_parameter_defaults():
+    """Verify run_dcm_pipeline exposes edge_margin, min_leg_vis, and adaptive_leg_vis with DCM defaults."""
+    import inspect
+    sig = inspect.signature(dcm_pipeline.run_dcm_pipeline)
+    params = sig.parameters
+    assert params["edge_margin"].default == 0.005
+    assert params["min_leg_vis"].default == 0.05
+    assert params["adaptive_leg_vis"].default is True
+
+
+

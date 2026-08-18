@@ -1521,6 +1521,11 @@ def test_extract_trims_leading_trailing_no_detection():
         with patch.object(_extract_mod, "get_extractor", return_value=mock_ext.return_value):
             data = extract(tmp_path, model="mediapipe")
 
+        assert data["extraction"]["edge_margin"] == 0.02
+        assert data["extraction"]["min_leg_vis"] == 0.30
+        assert data["extraction"]["adaptive_leg_vis"] is False
+        assert data["extraction"]["effective_min_leg_vis"] == 0.30
+
         frames = data["frames"]
         # Should have frames 3-7 only (5 frames), not 0-9 (10 frames)
         assert len(frames) == 5

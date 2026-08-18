@@ -338,6 +338,9 @@ def run_dcm_pipeline(
     generate_csv: bool = True,
     generate_opensim: bool = True,
     generate_plots: bool = True,
+    edge_margin: float = 0.005,
+    min_leg_vis: float = 0.05,
+    adaptive_leg_vis: bool = True,
 ) -> Dict[str, Any]:
     """Execute the customized DCM gait analysis pipeline on a single video file.
 
@@ -373,6 +376,12 @@ def run_dcm_pipeline(
         Whether to export OpenSim .mot and .trc files.
     generate_plots : bool
         Whether to generate PNG plot figures.
+    edge_margin : float, optional
+        Margin from image border for leg visibility gating (default 0.005).
+    min_leg_vis : float, optional
+        Minimum per-landmark visibility floor for hip, knee, and ankle (default 0.05).
+    adaptive_leg_vis : bool, optional
+        Whether to adapt the leg visibility threshold dynamically (default True).
 
     Returns
     -------
@@ -433,6 +442,9 @@ def run_dcm_pipeline(
             str(video_p),
             model=model,
             with_depth=False,  # Pure 2D pose extraction (avoids unauthenticated depth repo download)
+            edge_margin=edge_margin,
+            min_leg_vis=min_leg_vis,
+            adaptive_leg_vis=adaptive_leg_vis,
         )
         if "meta" not in data:
             data["meta"] = {}

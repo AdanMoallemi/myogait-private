@@ -14,7 +14,7 @@ extract
 import logging
 from datetime import datetime
 from pathlib import Path
-from typing import Optional, Dict, Any, Union
+from typing import Optional, Dict, Any, Union, Tuple, Sequence, List
 
 import cv2
 import numpy as np
@@ -335,8 +335,8 @@ def _flip_auxiliary(aux: np.ndarray, landmark_names: list) -> np.ndarray:
 
 def _compute_confidences(
     lm: Optional[np.ndarray],
-    leg_indices: Optional[list] = None,
-) -> tuple[float, float]:
+    leg_indices: Optional[Sequence[int]] = None,
+) -> Tuple[float, float]:
     """Compute (confidence, leg_confidence) for a landmark array.
 
     confidence is the mean of all non-NaN landmark visibilities (0.0 if none).
@@ -370,6 +370,46 @@ def _compute_confidences(
     return conf, leg_conf
 
 
+def _compute_effective_min_leg_vis(
+    raw_landmarks: Sequence[Optional[np.ndarray]],
+    min_leg_vis: float = 0.30,
+    adaptive_leg_vis: bool = False,
+    leg_indices: Optional[Sequence[int]] = None,
+) -> float:
+    """Compute the effective minimum leg visibility threshold.
+
+    When adaptive_leg_vis is False, returns min_leg_vis.
+    When adaptive_leg_vis is True, computes the median leg_confidence across
+    all frames with detected landmarks and returns max(min_leg_vis, 0.5 * median_leg_conf).
+    Falls back to min_leg_vis if no valid frame confidences exist.
+    """
+    if not adaptive_leg_vis:
+        return float(min_leg_vis)
+
+    if leg_indices is None:
+        leg_indices = [
+            MP_NAME_TO_INDEX.get("LEFT_HIP", 23),
+            MP_NAME_TO_INDEX.get("RIGHT_HIP", 24),
+            MP_NAME_TO_INDEX.get("LEFT_KNEE", 25),
+            MP_NAME_TO_INDEX.get("RIGHT_KNEE", 26),
+            MP_NAME_TO_INDEX.get("LEFT_ANKLE", 27),
+            MP_NAME_TO_INDEX.get("RIGHT_ANKLE", 28),
+        ]
+
+    leg_confs = []
+    for lm in raw_landmarks:
+        if lm is not None:
+            _, leg_conf = _compute_confidences(lm, leg_indices)
+            if leg_conf > 0.0:
+                leg_confs.append(leg_conf)
+
+    if not leg_confs:
+        return float(min_leg_vis)
+
+    median_leg_conf = float(np.median(leg_confs))
+    return float(max(min_leg_vis, 0.5 * median_leg_conf))
+
+
 def extract(
     video_path: Union[str, Path],
     model: str = "mediapipe",
@@ -383,6 +423,9 @@ def extract(
     experimental: Optional[dict] = None,
     progress_callback=None,
     show_progress: bool = True,
+    edge_margin: float = 0.02,
+    min_leg_vis: float = 0.30,
+    adaptive_leg_vis: bool = False,
     **kwargs,
 ) -> dict:
     """Extract pose landmarks from a video.
@@ -418,6 +461,13 @@ def extract(
         Callback ``fn(float)`` receiving progress from 0.0 to 1.0.
     show_progress : bool, optional
         Print a progress bar to the console (default True).
+    edge_margin : float, optional
+        Margin from image border for leg visibility gating (default 0.02, i.e. 2%).
+    min_leg_vis : float, optional
+        Minimum per-landmark visibility for hip, knee, and ankle (default 0.30).
+    adaptive_leg_vis : bool, optional
+        If True, scale the leg visibility threshold dynamically based on median
+        clip leg confidence (default False).
     **kwargs
         Extra arguments passed to the model extractor.
 
@@ -688,8 +738,13 @@ def extract(
         MP_NAME_TO_INDEX.get("LEFT_ANKLE", 27),
         MP_NAME_TO_INDEX.get("RIGHT_ANKLE", 28),
     ]
-    _EDGE = 0.005  # 0.5% margin from image border
-    _MIN_LEG_VIS = 0.05  # minimum visibility for each leg landmark (keeps distant frames)
+
+    effective_min_leg_vis = _compute_effective_min_leg_vis(
+        raw_landmarks,
+        min_leg_vis=min_leg_vis,
+        adaptive_leg_vis=adaptive_leg_vis,
+        leg_indices=_LEG_INDICES,
+    )
 
     def _legs_visible(lm):
         """Return True if all leg landmarks are detected with confidence
@@ -700,9 +755,9 @@ def extract(
             x, y, vis = lm[idx, 0], lm[idx, 1], lm[idx, 2]
             if np.isnan(x) or np.isnan(y):
                 return False
-            if x <= _EDGE or x >= 1.0 - _EDGE or y <= _EDGE or y >= 1.0 - _EDGE:
+            if x <= edge_margin or x >= 1.0 - edge_margin or y <= edge_margin or y >= 1.0 - edge_margin:
                 return False
-            if np.isnan(vis) or vis < _MIN_LEG_VIS:
+            if np.isnan(vis) or vis < effective_min_leg_vis:
                 return False
         return True
 
@@ -804,6 +859,10 @@ def extract(
         "direction_detected": direction,
         "was_flipped": was_flipped,
         "side_label_convention": SIDE_LABEL_CONVENTION,
+        "edge_margin": edge_margin,
+        "min_leg_vis": min_leg_vis,
+        "adaptive_leg_vis": adaptive_leg_vis,
+        "effective_min_leg_vis": effective_min_leg_vis,
         "inversions_corrected": correct_inversions,
         "timestamp": datetime.now().isoformat(timespec="seconds"),
     }
