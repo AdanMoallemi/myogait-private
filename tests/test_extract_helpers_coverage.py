@@ -90,3 +90,19 @@ def test_extract_missing_file_raises_file_not_found():
 
     with pytest.raises(FileNotFoundError):
         extract("/definitely/not/here.mp4")
+
+
+def test_side_label_convention_constant():
+    from myogait.extract import SIDE_LABEL_CONVENTION, _flip_landmarks
+
+    assert SIDE_LABEL_CONVENTION == "anatomical"
+
+    # Test that _flip_landmarks mirrors x coordinate without swapping indices
+    lm = np.zeros((33, 3), dtype=float)
+    lm[11] = [0.2, 0.5, 1.0]  # LEFT_SHOULDER
+    lm[12] = [0.8, 0.5, 1.0]  # RIGHT_SHOULDER
+
+    flipped = _flip_landmarks(lm)
+    assert flipped[11, 0] == pytest.approx(0.8)
+    assert flipped[12, 0] == pytest.approx(0.2)
+

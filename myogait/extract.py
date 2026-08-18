@@ -310,6 +310,11 @@ def _detect_direction(frames_landmarks: list) -> str:
     return "left" if np.median(diffs) < 0 else "right"
 
 
+# Side-label convention: LEFT_/RIGHT_ slots hold the patient's true anatomical
+# sides because _flip_landmarks mirrors x without swapping pair identities.
+SIDE_LABEL_CONVENTION = "anatomical"
+
+
 def _flip_landmarks(landmarks: np.ndarray) -> np.ndarray:
     """Mirror landmarks horizontally across image width (x' = 1.0 - x).
 
@@ -765,6 +770,7 @@ def extract(
         "landmark_names": MP_LANDMARK_NAMES,
         "direction_detected": direction,
         "was_flipped": was_flipped,
+        "side_label_convention": SIDE_LABEL_CONVENTION,
         "inversions_corrected": correct_inversions,
         "timestamp": datetime.now().isoformat(timespec="seconds"),
     }

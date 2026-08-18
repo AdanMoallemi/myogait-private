@@ -179,12 +179,14 @@ def test_dcm_pipeline_folder_structure_and_metadata(tmp_path):
     readme_text = readme.read_text(encoding="utf-8")
     assert readme.exists() and "DCM Gait Analysis Run Report" in readme_text
     assert "**Cycle Analysis**: Both sides segmented normally." in readme_text
+    assert "**Side Labels**: Anatomical — left/right refer to the patient's true sides." in readme_text
 
     meta_text = meta.read_text(encoding="utf-8")
     assert meta.exists() and "myogait_version" in meta_text
     import json
     meta_json = json.loads(meta_text)
     assert meta_json.get("skipped_sides") == []
+    assert meta_json.get("side_label_convention") == "anatomical"
 
 
 def test_dcm_pipeline_folder_structure_and_metadata_skipped_sides(tmp_path):
@@ -244,8 +246,174 @@ def test_dcm_pipeline_folder_structure_and_metadata_skipped_sides(tmp_path):
     readme_text = readme.read_text(encoding="utf-8")
     assert "Cycle Analysis Warning" in readme_text
     assert "Right side skipped" in readme_text
+    assert "**Side Labels**: Anatomical — left/right refer to the patient's true sides." in readme_text
 
     meta_json = json.loads(meta.read_text(encoding="utf-8"))
     assert meta_json.get("skipped_sides") == skipped_sides
+    assert meta_json.get("side_label_convention") == "anatomical"
+
+
+def test_dcm_pipeline_side_labels_rightward(tmp_path):
+    """Test side labels and camera occlusion warning for rightward walking."""
+    from dcm_pipeline import _write_run_readme, _write_run_metadata
+    import json
+
+    stats = {
+        "spatiotemporal": {},
+        "symmetry": {},
+        "gps": {},
+        "sdi": {},
+        "pathology_flags": [],
+    }
+
+    _write_run_metadata(
+        output_dir=tmp_path,
+        video_path="rightward.mp4",
+        plane="sagittal",
+        subject_id="DCM_R",
+        subject_height_m=1.70,
+        model="mediapipe",
+        cutoff_hz=5.0,
+        events_method="zeni",
+        stats=stats,
+        elapsed_s=10.0,
+        apply_bias_correction=False,
+        side_label_convention="anatomical",
+    )
+    _write_run_readme(
+        output_dir=tmp_path,
+        video_path="rightward.mp4",
+        plane="sagittal",
+        subject_id="DCM_R",
+        subject_height_m=1.70,
+        model="mediapipe",
+        cutoff_hz=5.0,
+        events_method="zeni",
+        stats=stats,
+        elapsed_s=10.0,
+        apply_bias_correction=False,
+        side_label_convention="anatomical",
+        direction_detected="right",
+        was_flipped=True,
+    )
+
+    readme_text = (tmp_path / "README.md").read_text(encoding="utf-8")
+    meta_json = json.loads((tmp_path / "run_metadata.json").read_text(encoding="utf-8"))
+
+    assert meta_json.get("side_label_convention") == "anatomical"
+    expected_line = (
+        "**Side Labels**: Anatomical — left/right refer to the patient's true sides. "
+        "Detected walking direction: rightward (frames mirrored for analysis); "
+        "the patient's right leg was nearest the camera, so left-side tracking may be marginally noisier due to occlusion."
+    )
+    assert expected_line in readme_text
+
+
+def test_dcm_pipeline_side_labels_leftward(tmp_path):
+    """Test side labels and camera occlusion warning for leftward walking."""
+    from dcm_pipeline import _write_run_readme, _write_run_metadata
+    import json
+
+    stats = {
+        "spatiotemporal": {},
+        "symmetry": {},
+        "gps": {},
+        "sdi": {},
+        "pathology_flags": [],
+    }
+
+    _write_run_metadata(
+        output_dir=tmp_path,
+        video_path="leftward.mp4",
+        plane="sagittal",
+        subject_id="DCM_L",
+        subject_height_m=1.70,
+        model="mediapipe",
+        cutoff_hz=5.0,
+        events_method="zeni",
+        stats=stats,
+        elapsed_s=10.0,
+        apply_bias_correction=False,
+        side_label_convention="anatomical",
+    )
+    _write_run_readme(
+        output_dir=tmp_path,
+        video_path="leftward.mp4",
+        plane="sagittal",
+        subject_id="DCM_L",
+        subject_height_m=1.70,
+        model="mediapipe",
+        cutoff_hz=5.0,
+        events_method="zeni",
+        stats=stats,
+        elapsed_s=10.0,
+        apply_bias_correction=False,
+        side_label_convention="anatomical",
+        direction_detected="left",
+        was_flipped=False,
+    )
+
+    readme_text = (tmp_path / "README.md").read_text(encoding="utf-8")
+    meta_json = json.loads((tmp_path / "run_metadata.json").read_text(encoding="utf-8"))
+
+    assert meta_json.get("side_label_convention") == "anatomical"
+    expected_line = (
+        "**Side Labels**: Anatomical — left/right refer to the patient's true sides. "
+        "Detected walking direction: leftward; "
+        "the patient's left leg was nearest the camera, so right-side tracking may be marginally noisier due to occlusion."
+    )
+    assert expected_line in readme_text
+
+
+def test_dcm_pipeline_side_labels_unknown_direction(tmp_path):
+    """Test side labels with unknown walking direction omits near-leg occlusion guess."""
+    from dcm_pipeline import _write_run_readme, _write_run_metadata
+    import json
+
+    stats = {
+        "spatiotemporal": {},
+        "symmetry": {},
+        "gps": {},
+        "sdi": {},
+        "pathology_flags": [],
+    }
+
+    _write_run_metadata(
+        output_dir=tmp_path,
+        video_path="unknown.mp4",
+        plane="coronal",
+        subject_id="DCM_U",
+        subject_height_m=1.70,
+        model="mediapipe",
+        cutoff_hz=5.0,
+        events_method="zeni",
+        stats=stats,
+        elapsed_s=10.0,
+        apply_bias_correction=False,
+        side_label_convention="anatomical",
+    )
+    _write_run_readme(
+        output_dir=tmp_path,
+        video_path="unknown.mp4",
+        plane="coronal",
+        subject_id="DCM_U",
+        subject_height_m=1.70,
+        model="mediapipe",
+        cutoff_hz=5.0,
+        events_method="zeni",
+        stats=stats,
+        elapsed_s=10.0,
+        apply_bias_correction=False,
+        side_label_convention="anatomical",
+        direction_detected="unknown",
+    )
+
+    readme_text = (tmp_path / "README.md").read_text(encoding="utf-8")
+    meta_json = json.loads((tmp_path / "run_metadata.json").read_text(encoding="utf-8"))
+
+    assert meta_json.get("side_label_convention") == "anatomical"
+    assert "**Side Labels**: Anatomical — left/right refer to the patient's true sides. Detected walking direction: unknown." in readme_text
+    assert "nearest the camera" not in readme_text
+    assert "occlusion" not in readme_text
 
 

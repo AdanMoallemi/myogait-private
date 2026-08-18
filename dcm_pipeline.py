@@ -105,6 +105,7 @@ def _write_run_metadata(
     enable_bilateral: bool = True,
     experimenter: str = "",
     skipped_sides: list = None,
+    side_label_convention: str = "anatomical",
 ) -> Path:
     """Save machine-readable run configuration and clinical summary JSON."""
     meta_path = output_dir / "run_metadata.json"
@@ -120,6 +121,7 @@ def _write_run_metadata(
         "timestamp": datetime.datetime.now().isoformat(),
         "myogait_version": getattr(myogait, "__version__", "0.6.0"),
         "experimenter": experimenter,
+        "side_label_convention": side_label_convention,
         "input": {
             "video_path": str(Path(video_path).resolve()) if video_path else "Loaded from JSON",
             "video_filename": Path(video_path).name if video_path else "Loaded from JSON",
@@ -178,6 +180,9 @@ def _write_run_readme(
     enable_bilateral: bool = True,
     experimenter: str = "",
     skipped_sides: list = None,
+    side_label_convention: str = "anatomical",
+    direction_detected: str = "unknown",
+    was_flipped: bool = False,
 ) -> Path:
     """Generate human-readable Markdown README documenting the run settings & findings."""
     readme_path = output_dir / "README.md"
@@ -208,6 +213,27 @@ def _write_run_readme(
         ])
     else:
         skipped_formatted = "**Cycle Analysis**: Both sides segmented normally."
+
+    conv_cap = (side_label_convention or "anatomical").capitalize()
+    dir_norm = str(direction_detected).lower().strip() if direction_detected else "unknown"
+    if dir_norm in ("right", "rightward"):
+        dir_desc = "rightward (frames mirrored for analysis)" if was_flipped else "rightward"
+        side_labels_formatted = (
+            f"**Side Labels**: {conv_cap} — left/right refer to the patient's true sides. "
+            f"Detected walking direction: {dir_desc}; the patient's right leg was nearest the camera, "
+            f"so left-side tracking may be marginally noisier due to occlusion."
+        )
+    elif dir_norm in ("left", "leftward"):
+        side_labels_formatted = (
+            f"**Side Labels**: {conv_cap} — left/right refer to the patient's true sides. "
+            f"Detected walking direction: leftward; the patient's left leg was nearest the camera, "
+            f"so right-side tracking may be marginally noisier due to occlusion."
+        )
+    else:
+        side_labels_formatted = (
+            f"**Side Labels**: {conv_cap} — left/right refer to the patient's true sides. "
+            f"Detected walking direction: unknown."
+        )
 
     content = f"""# DCM Gait Analysis Run Report
 
@@ -240,6 +266,8 @@ def _write_run_readme(
 {flags_formatted}
 
 {skipped_formatted}
+
+{side_labels_formatted}
 
 ---
 
@@ -636,6 +664,11 @@ def run_dcm_pipeline(
 
     elapsed = time.time() - t_start
 
+    extraction_meta = data.get("extraction", {}) or {}
+    side_label_convention = extraction_meta.get("side_label_convention", "anatomical")
+    direction_detected = extraction_meta.get("direction_detected", "unknown")
+    was_flipped = extraction_meta.get("was_flipped", False)
+
     # F. Generate README.md and run_metadata.json
     _write_run_metadata(
         output_dir=out_p,
@@ -653,6 +686,7 @@ def run_dcm_pipeline(
         enable_bilateral=enable_bilateral,
         experimenter=experimenter,
         skipped_sides=skipped_sides,
+        side_label_convention=side_label_convention,
     )
     _write_run_readme(
         output_dir=out_p,
@@ -670,6 +704,9 @@ def run_dcm_pipeline(
         enable_bilateral=enable_bilateral,
         experimenter=experimenter,
         skipped_sides=skipped_sides,
+        side_label_convention=side_label_convention,
+        direction_detected=direction_detected,
+        was_flipped=was_flipped,
     )
     logger.info("      Generated run documentation: README.md & run_metadata.json")
 
