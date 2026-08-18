@@ -187,6 +187,15 @@ def test_dcm_pipeline_folder_structure_and_metadata(tmp_path):
     meta_json = json.loads(meta_text)
     assert meta_json.get("skipped_sides") == []
     assert meta_json.get("side_label_convention") == "anatomical"
+    assert meta_json.get("edge_margin") == 0.005
+    assert meta_json.get("min_leg_vis") == 0.05
+    assert meta_json.get("adaptive_leg_vis") is True
+    assert meta_json.get("effective_min_leg_vis") == 0.05
+    assert meta_json.get("settings", {}).get("edge_margin") == 0.005
+    assert meta_json.get("settings", {}).get("min_leg_vis") == 0.05
+    assert meta_json.get("settings", {}).get("adaptive_leg_vis") is True
+    assert meta_json.get("settings", {}).get("effective_min_leg_vis") == 0.05
+
 
 
 def test_dcm_pipeline_folder_structure_and_metadata_skipped_sides(tmp_path):
@@ -425,6 +434,38 @@ def test_dcm_pipeline_threshold_parameter_defaults():
     assert params["edge_margin"].default == 0.005
     assert params["min_leg_vis"].default == 0.05
     assert params["adaptive_leg_vis"].default is True
+
+
+def test_dcm_dashboard_frame_quality_presets():
+    """Verify dcm_dashboard defines FRAME_QUALITY_PRESETS with expected presets and parameters."""
+    import ast
+    dashboard_path = root_dir / "dcm_dashboard.py"
+    assert dashboard_path.exists()
+    tree = ast.parse(dashboard_path.read_text(encoding="utf-8"))
+    presets_node = next(
+        (
+            node
+            for node in tree.body
+            if isinstance(node, ast.Assign)
+            and any(getattr(t, "id", None) == "FRAME_QUALITY_PRESETS" for t in node.targets)
+        ),
+        None,
+    )
+    assert presets_node is not None
+    presets = ast.literal_eval(presets_node.value)
+    assert list(presets.keys()) == ["Distant subject", "Standard"]
+    assert presets["Distant subject"] == {
+        "edge_margin": 0.005,
+        "min_leg_vis": 0.05,
+        "adaptive_leg_vis": True,
+    }
+    assert presets["Standard"] == {
+        "edge_margin": 0.02,
+        "min_leg_vis": 0.30,
+        "adaptive_leg_vis": False,
+    }
+
+
 
 
 

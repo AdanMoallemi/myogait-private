@@ -24,6 +24,19 @@ if not ASSESSOR_DB.exists():
     with open(ASSESSOR_DB, "w") as f:
         json.dump(["Clinical Assessor A", "Clinical Assessor B"], f)
 
+FRAME_QUALITY_PRESETS = {
+    "Distant subject": {
+        "edge_margin": 0.005,
+        "min_leg_vis": 0.05,
+        "adaptive_leg_vis": True,
+    },
+    "Standard": {
+        "edge_margin": 0.02,
+        "min_leg_vis": 0.30,
+        "adaptive_leg_vis": False,
+    },
+}
+
 # -----------------
 # Helper Functions
 # -----------------
@@ -122,6 +135,21 @@ with tab_pipe:
             cutoff_hz = st.slider("Low-pass Filter Cutoff (Hz)", 1.0, 10.0, 5.0, 0.5)
             events_method = st.selectbox("Gait Event Method", list(EVENT_METHODS.keys()), index=0, help="Standard: zeni, crossing, velocity, oconnor.\nAdvanced (gk_): Deep learning and literature models (e.g. gk_ensemble for multi-model voting).")
             
+            quality_preset_help = (
+                "Standard: Stricter gating — requires each leg landmark to be clearly visible and well inside the frame. "
+                "Use for close, well-framed recordings where the subject fills a good portion of the image. Matches upstream MyoGait defaults.\n"
+                "Distant subject: Looser gating plus an adaptive floor that scales the visibility threshold to the clip's own median leg confidence. "
+                "Use when the subject is far from the camera and pose confidence is globally low, which would otherwise cause usable frames to be discarded at the start and end of the clip.\n"
+                "Caution: Looser gating admits lower-confidence frames, which can produce less reliable gait events near the beginning and end of a recording."
+            )
+            quality_preset = st.selectbox(
+                "Frame Quality Preset",
+                list(FRAME_QUALITY_PRESETS.keys()),
+                index=0,
+                help=quality_preset_help,
+            )
+            preset_params = FRAME_QUALITY_PRESETS[quality_preset]
+            
         with col4:
             export_pdf = st.checkbox("Generate Clinical PDF Report", True, help="Generates a comprehensive clinical PDF report with summary metrics, kinematic plots, and gait cycle comparisons.")
             export_excel = st.checkbox("Generate Excel Workbook", True, help="Generates a multi-sheet Excel workbook containing raw angles, spatiotemporal metrics, and computed clinical scores.")
@@ -181,7 +209,10 @@ with tab_pipe:
                                 visible_side=visible_side, enable_bilateral=enable_bilateral,
                                 experimenter=exp_sel, generate_pdf=export_pdf,
                                 generate_excel=export_excel, generate_csv=export_csv,
-                                generate_opensim=export_opensim, generate_plots=True
+                                generate_opensim=export_opensim, generate_plots=True,
+                                edge_margin=preset_params["edge_margin"],
+                                min_leg_vis=preset_params["min_leg_vis"],
+                                adaptive_leg_vis=preset_params["adaptive_leg_vis"],
                             )
                             st.session_state["pipeline_results"] = results
                             st.success("Analysis Complete!")
@@ -211,6 +242,35 @@ with tab_pipe:
                         
                         if flags: st.error(f"⚠️ **Clinical Flags Detected:** {', '.join(flags)}")
                         else: st.success("✅ No extreme pathological flags detected.")
+
+                        # Frame-Quality Thresholds Display
+                        try:
+                            meta_path = run_out_dir / "run_metadata.json"
+                            if meta_path.exists():
+                                with open(meta_path, "r", encoding="utf-8") as f_meta:
+                                    run_meta = json.load(f_meta)
+                                
+                                eff_vis = run_meta.get("effective_min_leg_vis", run_meta.get("settings", {}).get("effective_min_leg_vis"))
+                                min_vis = run_meta.get("min_leg_vis", run_meta.get("settings", {}).get("min_leg_vis"))
+                                edge_m = run_meta.get("edge_margin", run_meta.get("settings", {}).get("edge_margin"))
+                                adapt_vis = run_meta.get("adaptive_leg_vis", run_meta.get("settings", {}).get("adaptive_leg_vis"))
+
+                                items = []
+                                if eff_vis is not None:
+                                    items.append(f"**Effective Visibility Threshold:** `{eff_vis:.3f}`" if isinstance(eff_vis, float) else f"**Effective Visibility Threshold:** `{eff_vis}`")
+                                if min_vis is not None:
+                                    items.append(f"**Floor (`min_leg_vis`):** `{min_vis}`")
+                                if edge_m is not None:
+                                    items.append(f"**Edge Margin:** `{edge_m}`")
+                                if adapt_vis is not None:
+                                    items.append(f"**Adaptive Floor:** `{'Enabled' if adapt_vis else 'Disabled'}`")
+
+                                if items:
+                                    st.caption(f"⚙️ **Frame Quality:** {' | '.join(items)}")
+                                    if adapt_vis:
+                                        st.caption("When the adaptive floor is enabled, the effective threshold is computed per recording: a value above the floor means the clip tracked well, a value at the floor means the clip was distant or low-confidence and the threshold clamped.")
+                        except Exception:
+                            pass
 
                         # Plots
                         st.header("2. Biomechanical Plots")

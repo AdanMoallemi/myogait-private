@@ -106,6 +106,10 @@ def _write_run_metadata(
     experimenter: str = "",
     skipped_sides: list = None,
     side_label_convention: str = "anatomical",
+    edge_margin: float = 0.005,
+    min_leg_vis: float = 0.05,
+    adaptive_leg_vis: bool = True,
+    effective_min_leg_vis: Optional[float] = None,
 ) -> Path:
     """Save machine-readable run configuration and clinical summary JSON."""
     meta_path = output_dir / "run_metadata.json"
@@ -117,11 +121,17 @@ def _write_run_metadata(
     else:
         gps_overall = gps_val
 
+    eff_vis = effective_min_leg_vis if effective_min_leg_vis is not None else min_leg_vis
+
     meta = {
         "timestamp": datetime.datetime.now().isoformat(),
         "myogait_version": getattr(myogait, "__version__", "0.6.0"),
         "experimenter": experimenter,
         "side_label_convention": side_label_convention,
+        "edge_margin": edge_margin,
+        "min_leg_vis": min_leg_vis,
+        "adaptive_leg_vis": adaptive_leg_vis,
+        "effective_min_leg_vis": eff_vis,
         "input": {
             "video_path": str(Path(video_path).resolve()) if video_path else "Loaded from JSON",
             "video_filename": Path(video_path).name if video_path else "Loaded from JSON",
@@ -142,6 +152,10 @@ def _write_run_metadata(
             "events_detection_method": events_method,
             "visible_side": visible_side,
             "enable_bilateral": enable_bilateral,
+            "edge_margin": edge_margin,
+            "min_leg_vis": min_leg_vis,
+            "adaptive_leg_vis": adaptive_leg_vis,
+            "effective_min_leg_vis": eff_vis,
         },
         "results_summary": {
             "cadence_steps_per_min": st.get("cadence_steps_per_min"),
@@ -680,6 +694,10 @@ def run_dcm_pipeline(
     side_label_convention = extraction_meta.get("side_label_convention", "anatomical")
     direction_detected = extraction_meta.get("direction_detected", "unknown")
     was_flipped = extraction_meta.get("was_flipped", False)
+    edge_margin_val = extraction_meta.get("edge_margin", edge_margin)
+    min_leg_vis_val = extraction_meta.get("min_leg_vis", min_leg_vis)
+    adaptive_leg_vis_val = extraction_meta.get("adaptive_leg_vis", adaptive_leg_vis)
+    effective_min_leg_vis_val = extraction_meta.get("effective_min_leg_vis", min_leg_vis_val)
 
     # F. Generate README.md and run_metadata.json
     _write_run_metadata(
@@ -699,6 +717,10 @@ def run_dcm_pipeline(
         experimenter=experimenter,
         skipped_sides=skipped_sides,
         side_label_convention=side_label_convention,
+        edge_margin=edge_margin_val,
+        min_leg_vis=min_leg_vis_val,
+        adaptive_leg_vis=adaptive_leg_vis_val,
+        effective_min_leg_vis=effective_min_leg_vis_val,
     )
     _write_run_readme(
         output_dir=out_p,
