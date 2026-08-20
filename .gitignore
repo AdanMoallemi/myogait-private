@@ -18,7 +18,8 @@ run_pipeline.py
 # Local clinical data outputs
 Output/
 
-# Temp patch scripts and OS files
-.DS_Store
-patch_*.py
+# Local environment and temp folders
+env_dcm/
+.tmp/
+temp_myogait/
 

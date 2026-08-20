@@ -1,4 +1,5 @@
 # Launch MyoGait Clinical Dashboard (PowerShell)
+$envDir = Join-Path $PSScriptRoot "env_dcm"
 $condaCmd = $null
 if (Get-Command conda -ErrorAction SilentlyContinue) {
     $condaCmd = "conda"
@@ -25,9 +26,10 @@ if (Get-Command conda -ErrorAction SilentlyContinue) {
 
 if ($condaCmd) {
     & $condaCmd "shell.powershell" "hook" | Out-String | Invoke-Expression
-    conda activate dcm-gait
-} elseif (Test-Path "venv_dcm\Scripts\Activate.ps1") {
-    .\venv_dcm\Scripts\Activate.ps1
+    conda activate "$envDir"
+} elseif (Test-Path (Join-Path $envDir "Scripts\Activate.ps1")) {
+    $actScript = Join-Path $envDir "Scripts\Activate.ps1"
+    & $actScript
 }
 
 streamlit run dcm_dashboard.py

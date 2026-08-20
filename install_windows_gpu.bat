@@ -7,11 +7,13 @@ echo   (NVIDIA RTX 6000 / RTX 3000 / RTX 4000 / Quadro / CUDA Workstations)
 echo =====================================================================
 echo.
 
-:: Use spaceless temporary directory on this drive root (e.g. D:\temp_myogait)
-:: This prevents both C: drive space exhaustion and Windows space-splitting errors in path names
+:: 1. Force all temporary files onto this drive root (D:\temp_myogait)
 set "TEMP=%~d0\temp_myogait"
 set "TMP=%~d0\temp_myogait"
 if not exist "%TEMP%" mkdir "%TEMP%" 2>nul
+
+:: 2. Place the entire Python/Conda environment directly inside this project folder on D:
+set "ENV_DIR=%~dp0env_dcm"
 
 set "CONDA_CMD="
 where conda >nul 2>nul
@@ -32,21 +34,21 @@ goto CHECK_PYTHON
 :USE_CONDA
 echo [FOUND] Conda detected at: %CONDA_CMD%
 echo.
-echo [1/5] Creating or updating Conda environment 'dcm-gait' (Python 3.11)...
+echo [1/5] Creating environment directly on this drive (%ENV_DIR%)...
 call "%CONDA_CMD%" tos accept --override-channels --channel https://repo.anaconda.com/pkgs/main 2>nul
 call "%CONDA_CMD%" tos accept --override-channels --channel https://repo.anaconda.com/pkgs/r 2>nul
 call "%CONDA_CMD%" tos accept --override-channels --channel https://repo.anaconda.com/pkgs/msys2 2>nul
 call "%CONDA_CMD%" config --set terms_of_service_consent yes 2>nul
-call "%CONDA_CMD%" create -y -n dcm-gait --override-channels -c conda-forge python=3.11
+call "%CONDA_CMD%" create -y --prefix "%ENV_DIR%" --override-channels -c conda-forge python=3.11
 if %errorlevel% neq 0 (
     echo [RETRY] Retrying with default channels...
-    call "%CONDA_CMD%" create -y -n dcm-gait python=3.11
+    call "%CONDA_CMD%" create -y --prefix "%ENV_DIR%" python=3.11
 )
 echo.
-echo [2/5] Activating 'dcm-gait' environment...
-call "%CONDA_CMD%" activate dcm-gait
+echo [2/5] Activating environment...
+call "%CONDA_CMD%" activate "%ENV_DIR%"
 if %errorlevel% neq 0 (
-    echo [ERROR] Failed to activate dcm-gait environment!
+    echo [ERROR] Failed to activate environment!
     pause
     exit /b 1
 )
@@ -56,11 +58,11 @@ goto INSTALL_PACKAGES
 echo [NOTICE] Conda not found in PATH or standard folders. Checking for Python...
 where python >nul 2>nul
 if %errorlevel% neq 0 goto NO_PYTHON
-echo [1/5] Creating virtual environment 'venv_dcm'...
-python -m venv venv_dcm
+echo [1/5] Creating virtual environment at %ENV_DIR%...
+python -m venv "%ENV_DIR%"
 echo.
 echo [2/5] Activating virtual environment...
-call venv_dcm\Scripts\activate.bat
+call "%ENV_DIR%\Scripts\activate.bat"
 goto INSTALL_PACKAGES
 
 :NO_PYTHON
@@ -77,7 +79,7 @@ exit /b 1
 
 :INSTALL_PACKAGES
 echo.
-echo [3/5] Installing PyTorch with CUDA 12.4 GPU acceleration...
+echo [3/5] Installing PyTorch with CUDA 12.4 GPU acceleration on this drive...
 pip install torch torchvision --index-url https://download.pytorch.org/whl/cu124 --no-cache-dir
 if %errorlevel% neq 0 (
     echo [ERROR] PyTorch installation encountered an issue. Please re-run.

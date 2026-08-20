@@ -5,12 +5,13 @@ Write-Host "  (NVIDIA RTX 6000 / RTX 3000 / RTX 4000 / Quadro / CUDA Workstation
 Write-Host "=====================================================================" -ForegroundColor Cyan
 Write-Host ""
 
-# Spaceless temp folder on drive root (e.g. D:\temp_myogait)
 $driveRoot = (Get-Item $PSScriptRoot).PSDrive.Root
 $tmpDir = Join-Path $driveRoot "temp_myogait"
 if (-not (Test-Path $tmpDir)) { New-Item -ItemType Directory -Path $tmpDir | Out-Null }
 $env:TEMP = $tmpDir
 $env:TMP = $tmpDir
+
+$envDir = Join-Path $PSScriptRoot "env_dcm"
 
 $condaCmd = $null
 if (Get-Command conda -ErrorAction SilentlyContinue) {
@@ -39,24 +40,25 @@ if (Get-Command conda -ErrorAction SilentlyContinue) {
 if ($condaCmd) {
     Write-Host "[FOUND] Conda detected: $condaCmd" -ForegroundColor Green
     Write-Host ""
-    Write-Host "[1/5] Creating or updating Conda environment 'dcm-gait' (Python 3.11)..." -ForegroundColor Yellow
+    Write-Host "[1/5] Creating environment directly on this drive ($envDir)..." -ForegroundColor Yellow
     & $condaCmd tos accept --override-channels --channel https://repo.anaconda.com/pkgs/main 2>$null
     & $condaCmd tos accept --override-channels --channel https://repo.anaconda.com/pkgs/r 2>$null
     & $condaCmd tos accept --override-channels --channel https://repo.anaconda.com/pkgs/msys2 2>$null
     & $condaCmd config --set terms_of_service_consent yes 2>$null
-    & $condaCmd create -y -n dcm-gait --override-channels -c conda-forge python=3.11
+    & $condaCmd create -y --prefix "$envDir" --override-channels -c conda-forge python=3.11
 
     Write-Host ""
     Write-Host "[2/5] Initializing conda environment..." -ForegroundColor Yellow
     & $condaCmd "shell.powershell" "hook" | Out-String | Invoke-Expression
-    conda activate dcm-gait
+    conda activate "$envDir"
 } else {
     Write-Host "[NOTICE] Conda not found. Checking for Python..." -ForegroundColor Yellow
     if (Get-Command python -ErrorAction SilentlyContinue) {
-        Write-Host "[1/5] Creating standard Python virtual environment 'venv_dcm'..." -ForegroundColor Yellow
-        python -m venv venv_dcm
+        Write-Host "[1/5] Creating virtual environment at $envDir..." -ForegroundColor Yellow
+        python -m venv "$envDir"
         Write-Host "[2/5] Activating virtual environment..." -ForegroundColor Yellow
-        .\venv_dcm\Scripts\Activate.ps1
+        $actScript = Join-Path $envDir "Scripts\Activate.ps1"
+        & $actScript
     } else {
         Write-Host ""
         Write-Host "[ERROR] Neither Conda nor Python was found on this system!" -ForegroundColor Red
@@ -67,7 +69,7 @@ if ($condaCmd) {
 }
 
 Write-Host ""
-Write-Host "[3/5] Installing PyTorch with CUDA 12.4 GPU acceleration..." -ForegroundColor Yellow
+Write-Host "[3/5] Installing PyTorch with CUDA 12.4 GPU acceleration on this drive..." -ForegroundColor Yellow
 pip install torch torchvision --index-url https://download.pytorch.org/whl/cu124 --no-cache-dir
 
 Write-Host ""
