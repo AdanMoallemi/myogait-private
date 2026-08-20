@@ -3,7 +3,9 @@ setlocal
 
 echo Starting MyoGait Clinical Dashboard...
 
-set "ENV_DIR=%~dp0env_dcm"
+set "ENV_DIR=%~d0\conda_envs\dcm-gait"
+if not exist "%ENV_DIR%" set "ENV_DIR=%~dp0env_dcm"
+
 set "CONDA_CMD="
 where conda >nul 2>nul
 if %errorlevel% equ 0 set "CONDA_CMD=conda"

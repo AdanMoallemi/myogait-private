@@ -11,7 +11,8 @@ if (-not (Test-Path $tmpDir)) { New-Item -ItemType Directory -Path $tmpDir | Out
 $env:TEMP = $tmpDir
 $env:TMP = $tmpDir
 
-$envDir = Join-Path $PSScriptRoot "env_dcm"
+# Spaceless environment directory on drive root (e.g. D:\conda_envs\dcm-gait)
+$envDir = Join-Path $driveRoot "conda_envs\dcm-gait"
 
 $condaCmd = $null
 if (Get-Command conda -ErrorAction SilentlyContinue) {
@@ -40,7 +41,7 @@ if (Get-Command conda -ErrorAction SilentlyContinue) {
 if ($condaCmd) {
     Write-Host "[FOUND] Conda detected: $condaCmd" -ForegroundColor Green
     Write-Host ""
-    Write-Host "[1/5] Creating environment directly on this drive ($envDir)..." -ForegroundColor Yellow
+    Write-Host "[1/5] Creating environment on drive at $envDir..." -ForegroundColor Yellow
     & $condaCmd tos accept --override-channels --channel https://repo.anaconda.com/pkgs/main 2>$null
     & $condaCmd tos accept --override-channels --channel https://repo.anaconda.com/pkgs/r 2>$null
     & $condaCmd tos accept --override-channels --channel https://repo.anaconda.com/pkgs/msys2 2>$null

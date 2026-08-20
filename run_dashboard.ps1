@@ -1,5 +1,10 @@
 # Launch MyoGait Clinical Dashboard (PowerShell)
-$envDir = Join-Path $PSScriptRoot "env_dcm"
+$driveRoot = (Get-Item $PSScriptRoot).PSDrive.Root
+$envDir = Join-Path $driveRoot "conda_envs\dcm-gait"
+if (-not (Test-Path $envDir)) {
+    $envDir = Join-Path $PSScriptRoot "env_dcm"
+}
+
 $condaCmd = $null
 if (Get-Command conda -ErrorAction SilentlyContinue) {
     $condaCmd = "conda"

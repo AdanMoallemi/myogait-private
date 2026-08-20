@@ -7,13 +7,13 @@ echo   (NVIDIA RTX 6000 / RTX 3000 / RTX 4000 / Quadro / CUDA Workstations)
 echo =====================================================================
 echo.
 
-:: 1. Force all temporary files onto this drive root (D:\temp_myogait)
+:: 1. Force all temporary files onto this drive root (e.g. D:\temp_myogait)
 set "TEMP=%~d0\temp_myogait"
 set "TMP=%~d0\temp_myogait"
 if not exist "%TEMP%" mkdir "%TEMP%" 2>nul
 
-:: 2. Place the entire Python/Conda environment directly inside this project folder on D:
-set "ENV_DIR=%~dp0env_dcm"
+:: 2. Place environment in a spaceless folder on this drive root (e.g. D:\conda_envs\dcm-gait)
+set "ENV_DIR=%~d0\conda_envs\dcm-gait"
 
 set "CONDA_CMD="
 where conda >nul 2>nul
@@ -34,7 +34,7 @@ goto CHECK_PYTHON
 :USE_CONDA
 echo [FOUND] Conda detected at: %CONDA_CMD%
 echo.
-echo [1/5] Creating environment directly on this drive (%ENV_DIR%)...
+echo [1/5] Creating environment directly on this drive at %ENV_DIR%...
 call "%CONDA_CMD%" tos accept --override-channels --channel https://repo.anaconda.com/pkgs/main 2>nul
 call "%CONDA_CMD%" tos accept --override-channels --channel https://repo.anaconda.com/pkgs/r 2>nul
 call "%CONDA_CMD%" tos accept --override-channels --channel https://repo.anaconda.com/pkgs/msys2 2>nul
