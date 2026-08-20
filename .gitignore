@@ -17,3 +17,8 @@ run_pipeline.py
 
 # Local clinical data outputs
 Output/
+
+# Temp patch scripts and OS files
+.DS_Store
+patch_*.py
+

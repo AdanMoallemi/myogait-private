@@ -65,6 +65,46 @@ def save_patient(pid, data):
     with open(pdir / "profile.json", "w") as f:
         json.dump(data, f, indent=4)
 
+def get_hardware_info():
+    """Detect GPU hardware, VRAM, and return recommendations and waivers."""
+    info = {
+        "has_torch": False,
+        "cuda_available": False,
+        "device_name": "CPU (Lightweight / Standard)",
+        "vram_gb": 0.0,
+        "tier": "cpu",
+        "badge": "💻 CPU Mode",
+        "recommended": ["mediapipe", "yolo"],
+        "waiver": "Running on CPU. MediaPipe is strongly recommended for fast inference. Sapiens / ViTPose may be slow without a dedicated GPU."
+    }
+    try:
+        import torch
+        info["has_torch"] = True
+        if torch.cuda.is_available():
+            info["cuda_available"] = True
+            info["device_name"] = torch.cuda.get_device_name(0)
+            total_bytes = torch.cuda.get_device_properties(0).total_memory
+            info["vram_gb"] = round(total_bytes / (1024 ** 3), 1)
+            
+            if info["vram_gb"] >= 16.0:
+                info["tier"] = "ultra"
+                info["badge"] = f"🔥 Workstation GPU: {info['device_name']} ({info['vram_gb']} GB VRAM)"
+                info["recommended"] = ["sapiens2-ultra", "sapiens2-top", "vitpose-huge", "sapiens-top", "yolo", "mediapipe"]
+                info["waiver"] = "✅ Full Clearance: High VRAM (≥16GB) detected. All models, including Sapiens 2 Ultra (5B), Sapiens 2 Top (1B), and ViTPose Huge, can run at maximum accuracy without OOM risk."
+            elif info["vram_gb"] >= 8.0:
+                info["tier"] = "high"
+                info["badge"] = f"⚡ High-End GPU: {info['device_name']} ({info['vram_gb']} GB VRAM)"
+                info["recommended"] = ["sapiens2-mid", "sapiens2-quick", "sapiens-mid", "vitpose-large", "yolo", "mediapipe"]
+                info["waiver"] = "✅ High VRAM (8-12GB). Sapiens 2 Mid (0.8B) and ViTPose Large recommended. Sapiens 2 Ultra (5B) may exceed memory on long 4K clips."
+            else:
+                info["tier"] = "entry"
+                info["badge"] = f"⚡ Entry/Laptop GPU: {info['device_name']} ({info['vram_gb']} GB VRAM)"
+                info["recommended"] = ["sapiens2-quick", "vitpose", "yolo", "rtmw", "mediapipe"]
+                info["waiver"] = "⚠️ Entry VRAM (<8GB). Recommended: Sapiens 2 Quick (0.4B), ViTPose Base, YOLO, or MediaPipe. Avoid 1B+ / 5B models to prevent CUDA Out-of-Memory."
+    except Exception:
+        pass
+    return info
+
 st.set_page_config(page_title="MyoGait DCM Dashboard", layout="wide")
 
 col_title, col_logo = st.columns([6, 1])
@@ -121,6 +161,13 @@ with tab_pipe:
             
         st.markdown("---")
         
+        # Hardware & Compute Status
+        hw_info = get_hardware_info()
+        with st.expander(f"🖥️ Hardware & GPU Status: {hw_info['badge']}", expanded=False):
+            st.markdown(f"**Compute Device:** `{hw_info['device_name']}`" + (f" (`{hw_info['vram_gb']} GB VRAM`)" if hw_info["cuda_available"] else ""))
+            st.info(hw_info["waiver"])
+            st.markdown("**Recommended Models for this System:** " + ", ".join([f"`{m}`" for m in hw_info["recommended"]]))
+
         # Pipeline Settings
         col3, col4 = st.columns(2)
         with col3:
@@ -131,6 +178,11 @@ with tab_pipe:
             
             available_models = list_models()
             model = st.selectbox("Pose Model", available_models, index=available_models.index("mediapipe") if "mediapipe" in available_models else 0)
+            
+            if "sapiens2-ultra" in model and hw_info["vram_gb"] < 16.0 and hw_info["cuda_available"]:
+                st.warning("⚠️ Sapiens 2 Ultra (5B) requires ≥16 GB VRAM. If memory errors occur, select `sapiens2-mid` or `sapiens2-quick`.")
+            elif ("sapiens" in model or "vitpose" in model) and not hw_info["cuda_available"]:
+                st.caption("ℹ️ Running heavy transformer model on CPU. For fast real-time extraction, `mediapipe` or `yolo` is recommended.")
             
             cutoff_hz = st.slider("Low-pass Filter Cutoff (Hz)", 1.0, 10.0, 5.0, 0.5)
             events_method = st.selectbox("Gait Event Method", list(EVENT_METHODS.keys()), index=0, help="Standard: zeni, crossing, velocity, oconnor.\nAdvanced (gk_): Deep learning and literature models (e.g. gk_ensemble for multi-model voting).")
