@@ -33,7 +33,8 @@ if ($condaCmd) {
     Write-Host "[FOUND] Conda detected: $condaCmd" -ForegroundColor Green
     Write-Host ""
     Write-Host "[1/5] Creating or updating Conda environment 'dcm-gait' (Python 3.11)..." -ForegroundColor Yellow
-    & $condaCmd create -y -n dcm-gait python=3.11
+    & $condaCmd tos accept --all 2>$null
+    & $condaCmd create -y -n dcm-gait -c conda-forge python=3.11
 
     Write-Host ""
     Write-Host "[2/5] Initializing conda environment..." -ForegroundColor Yellow

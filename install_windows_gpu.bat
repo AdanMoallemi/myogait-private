@@ -27,10 +27,20 @@ goto CHECK_PYTHON
 echo [FOUND] Conda detected at: %CONDA_CMD%
 echo.
 echo [1/5] Creating or updating Conda environment 'dcm-gait' (Python 3.11)...
-call "%CONDA_CMD%" create -y -n dcm-gait python=3.11
+call "%CONDA_CMD%" tos accept --all 2>nul
+call "%CONDA_CMD%" create -y -n dcm-gait -c conda-forge python=3.11
+if %errorlevel% neq 0 (
+    echo [RETRY] Retrying with default channels...
+    call "%CONDA_CMD%" create -y -n dcm-gait python=3.11
+)
 echo.
 echo [2/5] Activating 'dcm-gait' environment...
 call "%CONDA_CMD%" activate dcm-gait
+if %errorlevel% neq 0 (
+    echo [ERROR] Failed to activate dcm-gait environment!
+    pause
+    exit /b 1
+)
 goto INSTALL_PACKAGES
 
 :CHECK_PYTHON
