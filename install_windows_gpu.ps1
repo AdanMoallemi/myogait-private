@@ -5,6 +5,12 @@ Write-Host "  (NVIDIA RTX 6000 / RTX 3000 / RTX 4000 / Quadro / CUDA Workstation
 Write-Host "=====================================================================" -ForegroundColor Cyan
 Write-Host ""
 
+# Redirect temp folder to this drive to prevent C: exhaustion or file locks
+$tmpDir = Join-Path $PSScriptRoot ".tmp"
+if (-not (Test-Path $tmpDir)) { New-Item -ItemType Directory -Path $tmpDir | Out-Null }
+$env:TEMP = $tmpDir
+$env:TMP = $tmpDir
+
 $condaCmd = $null
 if (Get-Command conda -ErrorAction SilentlyContinue) {
     $condaCmd = "conda"
@@ -61,16 +67,18 @@ if ($condaCmd) {
 
 Write-Host ""
 Write-Host "[3/5] Installing PyTorch with CUDA 12.4 GPU acceleration..." -ForegroundColor Yellow
-pip install torch torchvision --index-url https://download.pytorch.org/whl/cu124
+pip install torch torchvision --index-url https://download.pytorch.org/whl/cu124 --no-cache-dir
 
 Write-Host ""
 Write-Host "[4/5] Installing MyoGait and all dependencies..." -ForegroundColor Yellow
-pip install -e ".[all]"
-pip install streamlit onnxruntime-gpu openpyxl
+pip install -e ".[all]" --no-cache-dir
+pip install streamlit onnxruntime-gpu openpyxl --no-cache-dir
 
 Write-Host ""
 Write-Host "[5/5] Checking GPU detection and hardware specs..." -ForegroundColor Yellow
 python -c "import torch; print('--------------------------------------------------'); print('PyTorch Version:', torch.__version__); print('CUDA Available:', torch.cuda.is_available()); print('Device Count:', torch.cuda.device_count()); print('GPU Name:', torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'NONE (CPU Mode)'); print('VRAM (GB):', round(torch.cuda.get_device_properties(0).total_memory / (1024**3), 2) if torch.cuda.is_available() else 0.0); print('--------------------------------------------------')"
+
+if (Test-Path $tmpDir) { Remove-Item -Recurse -Force $tmpDir -ErrorAction SilentlyContinue }
 
 Write-Host ""
 Write-Host "=====================================================================" -ForegroundColor Green

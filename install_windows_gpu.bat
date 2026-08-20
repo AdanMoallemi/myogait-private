@@ -7,6 +7,11 @@ echo   (NVIDIA RTX 6000 / RTX 3000 / RTX 4000 / Quadro / CUDA Workstations)
 echo =====================================================================
 echo.
 
+:: Redirect temporary download directory to this drive so C: is not exhausted or locked
+if not exist "%~dp0.tmp" mkdir "%~dp0.tmp"
+set "TEMP=%~dp0.tmp"
+set "TMP=%~dp0.tmp"
+
 set "CONDA_CMD="
 where conda >nul 2>nul
 if %errorlevel% equ 0 set "CONDA_CMD=conda"
@@ -33,7 +38,7 @@ call "%CONDA_CMD%" tos accept --override-channels --channel https://repo.anacond
 call "%CONDA_CMD%" config --set terms_of_service_consent yes 2>nul
 call "%CONDA_CMD%" create -y -n dcm-gait --override-channels -c conda-forge python=3.11
 if %errorlevel% neq 0 (
-    echo [RETRY] Retrying with accepted default channels...
+    echo [RETRY] Retrying with default channels...
     call "%CONDA_CMD%" create -y -n dcm-gait python=3.11
 )
 echo.
@@ -72,15 +77,21 @@ exit /b 1
 :INSTALL_PACKAGES
 echo.
 echo [3/5] Installing PyTorch with CUDA 12.4 GPU acceleration...
-pip install torch torchvision --index-url https://download.pytorch.org/whl/cu124
+pip install torch torchvision --index-url https://download.pytorch.org/whl/cu124 --no-cache-dir
+if %errorlevel% neq 0 (
+    echo [ERROR] PyTorch installation encountered an issue. Please re-run.
+    pause
+    exit /b 1
+)
 echo.
 echo [4/5] Installing MyoGait, Dashboard, and Dependencies...
-pip install -e ".[all]"
-pip install streamlit onnxruntime-gpu openpyxl
+pip install -e ".[all]" --no-cache-dir
+pip install streamlit onnxruntime-gpu openpyxl --no-cache-dir
 echo.
 echo [5/5] Checking GPU detection and hardware specs...
 python -c "import torch; print('--------------------------------------------------'); print('PyTorch Version:', torch.__version__); print('CUDA Available:', torch.cuda.is_available()); print('Device Count:', torch.cuda.device_count()); print('GPU Name:', torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'NONE (CPU Mode)'); print('VRAM (GB):', round(torch.cuda.get_device_properties(0).total_memory / (1024**3), 2) if torch.cuda.is_available() else 0.0); print('--------------------------------------------------')"
 echo.
+if exist "%~dp0.tmp" rd /s /q "%~dp0.tmp" 2>nul
 echo =====================================================================
 echo   Setup Complete! Launch dashboard with 'run_dashboard.bat'
 echo =====================================================================
