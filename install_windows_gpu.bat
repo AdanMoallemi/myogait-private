@@ -27,10 +27,13 @@ goto CHECK_PYTHON
 echo [FOUND] Conda detected at: %CONDA_CMD%
 echo.
 echo [1/5] Creating or updating Conda environment 'dcm-gait' (Python 3.11)...
-call "%CONDA_CMD%" tos accept --all 2>nul
-call "%CONDA_CMD%" create -y -n dcm-gait -c conda-forge python=3.11
+call "%CONDA_CMD%" tos accept --override-channels --channel https://repo.anaconda.com/pkgs/main 2>nul
+call "%CONDA_CMD%" tos accept --override-channels --channel https://repo.anaconda.com/pkgs/r 2>nul
+call "%CONDA_CMD%" tos accept --override-channels --channel https://repo.anaconda.com/pkgs/msys2 2>nul
+call "%CONDA_CMD%" config --set terms_of_service_consent yes 2>nul
+call "%CONDA_CMD%" create -y -n dcm-gait --override-channels -c conda-forge python=3.11
 if %errorlevel% neq 0 (
-    echo [RETRY] Retrying with default channels...
+    echo [RETRY] Retrying with accepted default channels...
     call "%CONDA_CMD%" create -y -n dcm-gait python=3.11
 )
 echo.
