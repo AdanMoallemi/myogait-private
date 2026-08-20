@@ -48,16 +48,20 @@ Before starting, ensure the following three free tools are installed on your wor
 
 ## 3. Step 2: One-Step Automated Environment Setup
 
-We provide an automated batch script that configures Python, CUDA GPU drivers, PyTorch, and all AI pose models in a single click.
+We provide automated setup scripts that configure Python, CUDA GPU drivers, PyTorch, and all AI pose models in a single command.
 
-### In VS Code:
-1. Open the integrated terminal: Click **`Terminal`** > **`New Terminal`** at the top menu.
-2. In the terminal window at the bottom, type the following command and press **Enter**:
+> 🔒 **Environment Isolation Guarantee**:  
+> The installer creates a dedicated, isolated Conda environment named **`dcm-gait`**. It will **never** alter, overwrite, or conflict with your `base` environment or any other existing Conda/Python environments on your workstation. Everything installed remains 100% contained within `dcm-gait`.
 
-   **On Windows (PC with NVIDIA GPU):**
-   ```cmd
-   .\install_windows_gpu.bat
+### In VS Code Terminal:
+1. Open the integrated terminal: Click **`Terminal`** > **`New Terminal`** at the top menu (or press `Ctrl + ~`).
+2. In the terminal window at the bottom, run the command for your shell:
+
+   **On Windows (PowerShell - Default in VS Code):**
+   ```powershell
+   .\install_windows_gpu.ps1
    ```
+   *(Or in Command Prompt: `.\install_windows_gpu.bat`)*
 
    **On macOS / Linux:**
    ```bash
@@ -95,11 +99,13 @@ To make sure VS Code uses the newly created `dcm-gait` environment:
 ## 5. Step 4: Launching the Dashboard from VS Code
 
 ### Method 1: The One-Command Launch (Inside VS Code Terminal)
-In the VS Code Terminal, ensure the `dcm-gait` environment is active (you will see `(dcm-gait)` on the left side of the prompt), then type:
+In the VS Code Terminal, run:
 
-```bash
-streamlit run dcm_dashboard.py
+**On Windows PowerShell:**
+```powershell
+.\run_dashboard.ps1
 ```
+*(Or directly: `streamlit run dcm_dashboard.py`)*
 
 ### Method 2: The One-Click Batch Launcher (Windows Explorer)
 Alternatively, navigate to the `myogait` folder in Windows File Explorer and double-click **`run_dashboard.bat`**.
