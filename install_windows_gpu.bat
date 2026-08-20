@@ -79,17 +79,19 @@ exit /b 1
 
 :INSTALL_PACKAGES
 echo.
-echo [3/5] Installing PyTorch with CUDA 12.4 GPU acceleration on this drive...
-pip install torch torchvision --index-url https://download.pytorch.org/whl/cu124 --no-cache-dir
+echo [3/5] Installing MyoGait and model dependencies...
+pip install -e ".[all]" --no-cache-dir
+pip install streamlit onnxruntime-gpu openpyxl --no-cache-dir
+
+echo.
+echo [4/5] Installing PyTorch with CUDA 12.4 GPU acceleration on this drive...
+pip install torch torchvision --index-url https://download.pytorch.org/whl/cu124 --force-reinstall --no-cache-dir
 if %errorlevel% neq 0 (
-    echo [ERROR] PyTorch installation encountered an issue. Please re-run.
+    echo [ERROR] PyTorch CUDA installation encountered an issue. Please re-run.
     pause
     exit /b 1
 )
-echo.
-echo [4/5] Installing MyoGait, Dashboard, and Dependencies...
-pip install -e ".[all]" --no-cache-dir
-pip install streamlit onnxruntime-gpu openpyxl --no-cache-dir
+
 echo.
 echo [5/5] Checking GPU detection and hardware specs...
 python -c "import torch; print('--------------------------------------------------'); print('PyTorch Version:', torch.__version__); print('CUDA Available:', torch.cuda.is_available()); print('Device Count:', torch.cuda.device_count()); print('GPU Name:', torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'NONE (CPU Mode)'); print('VRAM (GB):', round(torch.cuda.get_device_properties(0).total_memory / (1024**3), 2) if torch.cuda.is_available() else 0.0); print('--------------------------------------------------')"

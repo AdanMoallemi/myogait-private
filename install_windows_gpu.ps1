@@ -69,13 +69,13 @@ if ($condaCmd) {
 }
 
 Write-Host ""
-Write-Host "[3/5] Installing PyTorch with CUDA 12.4 GPU acceleration on this drive..." -ForegroundColor Yellow
-pip install torch torchvision --index-url https://download.pytorch.org/whl/cu124 --no-cache-dir
-
-Write-Host ""
-Write-Host "[4/5] Installing MyoGait and all dependencies..." -ForegroundColor Yellow
+Write-Host "[3/5] Installing MyoGait and model dependencies..." -ForegroundColor Yellow
 pip install -e ".[all]" --no-cache-dir
 pip install streamlit onnxruntime-gpu openpyxl --no-cache-dir
+
+Write-Host ""
+Write-Host "[4/5] Installing PyTorch with CUDA 12.4 GPU acceleration on this drive..." -ForegroundColor Yellow
+pip install torch torchvision --index-url https://download.pytorch.org/whl/cu124 --force-reinstall --no-cache-dir
 
 Write-Host ""
 Write-Host "[5/5] Checking GPU detection and hardware specs..." -ForegroundColor Yellow
