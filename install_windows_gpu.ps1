@@ -5,8 +5,9 @@ Write-Host "  (NVIDIA RTX 6000 / RTX 3000 / RTX 4000 / Quadro / CUDA Workstation
 Write-Host "=====================================================================" -ForegroundColor Cyan
 Write-Host ""
 
-# Redirect temp folder to this drive to prevent C: exhaustion or file locks
-$tmpDir = Join-Path $PSScriptRoot ".tmp"
+# Spaceless temp folder on drive root (e.g. D:\temp_myogait)
+$driveRoot = (Get-Item $PSScriptRoot).PSDrive.Root
+$tmpDir = Join-Path $driveRoot "temp_myogait"
 if (-not (Test-Path $tmpDir)) { New-Item -ItemType Directory -Path $tmpDir | Out-Null }
 $env:TEMP = $tmpDir
 $env:TMP = $tmpDir

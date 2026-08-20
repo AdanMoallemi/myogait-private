@@ -7,10 +7,11 @@ echo   (NVIDIA RTX 6000 / RTX 3000 / RTX 4000 / Quadro / CUDA Workstations)
 echo =====================================================================
 echo.
 
-:: Redirect temporary download directory to this drive so C: is not exhausted or locked
-if not exist "%~dp0.tmp" mkdir "%~dp0.tmp"
-set "TEMP=%~dp0.tmp"
-set "TMP=%~dp0.tmp"
+:: Use spaceless temporary directory on this drive root (e.g. D:\temp_myogait)
+:: This prevents both C: drive space exhaustion and Windows space-splitting errors in path names
+set "TEMP=%~d0\temp_myogait"
+set "TMP=%~d0\temp_myogait"
+if not exist "%TEMP%" mkdir "%TEMP%" 2>nul
 
 set "CONDA_CMD="
 where conda >nul 2>nul
@@ -91,7 +92,7 @@ echo.
 echo [5/5] Checking GPU detection and hardware specs...
 python -c "import torch; print('--------------------------------------------------'); print('PyTorch Version:', torch.__version__); print('CUDA Available:', torch.cuda.is_available()); print('Device Count:', torch.cuda.device_count()); print('GPU Name:', torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'NONE (CPU Mode)'); print('VRAM (GB):', round(torch.cuda.get_device_properties(0).total_memory / (1024**3), 2) if torch.cuda.is_available() else 0.0); print('--------------------------------------------------')"
 echo.
-if exist "%~dp0.tmp" rd /s /q "%~dp0.tmp" 2>nul
+if exist "%TEMP%" rd /s /q "%TEMP%" 2>nul
 echo =====================================================================
 echo   Setup Complete! Launch dashboard with 'run_dashboard.bat'
 echo =====================================================================
