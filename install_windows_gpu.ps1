@@ -78,6 +78,14 @@ Write-Host ""
 Write-Host "[4/5] Installing PyTorch with CUDA 12.4 GPU acceleration on this drive..." -ForegroundColor Yellow
 pip install torch torchvision --index-url https://download.pytorch.org/whl/cu124 --force-reinstall --no-cache-dir
 
+$isCudaOk = python -c "import torch; exit(0 if torch.cuda.is_available() else 1)"
+if ($LASTEXITCODE -ne 0) {
+    Write-Host ""
+    Write-Host "[NOTICE] CUDA 12.4 was not recognized by your current NVIDIA driver." -ForegroundColor Yellow
+    Write-Host "[FALLBACK] Trying CUDA 11.8 compatibility build..." -ForegroundColor Yellow
+    pip install torch torchvision --index-url https://download.pytorch.org/whl/cu118 --force-reinstall --no-cache-dir
+}
+
 Write-Host ""
 Write-Host "[5/5] Checking GPU detection and hardware specs..." -ForegroundColor Yellow
 python -c "import torch; print('--------------------------------------------------'); print('PyTorch Version:', torch.__version__); print('CUDA Available:', torch.cuda.is_available()); print('Device Count:', torch.cuda.device_count()); print('GPU Name:', torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'NONE (CPU Mode)'); print('VRAM (GB):', round(torch.cuda.get_device_properties(0).total_memory / (1024**3), 2) if torch.cuda.is_available() else 0.0); print('--------------------------------------------------')"

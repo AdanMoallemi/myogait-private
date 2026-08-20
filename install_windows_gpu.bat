@@ -84,12 +84,15 @@ pip install -e ".[all]" --no-cache-dir
 pip install streamlit onnxruntime-gpu openpyxl --no-cache-dir
 
 echo.
-echo [4/5] Installing PyTorch with CUDA 12.4 GPU acceleration on this drive...
+echo [4/5] Installing PyTorch with CUDA 12.4 GPU acceleration...
 pip install torch torchvision --index-url https://download.pytorch.org/whl/cu124 --force-reinstall --no-cache-dir
+
+python -c "import torch; exit(0 if torch.cuda.is_available() else 1)" 2>nul
 if %errorlevel% neq 0 (
-    echo [ERROR] PyTorch CUDA installation encountered an issue. Please re-run.
-    pause
-    exit /b 1
+    echo.
+    echo [NOTICE] CUDA 12.4 was not recognized by your current NVIDIA driver.
+    echo [FALLBACK] Trying CUDA 11.8 compatibility build...
+    pip install torch torchvision --index-url https://download.pytorch.org/whl/cu118 --force-reinstall --no-cache-dir
 )
 
 echo.
