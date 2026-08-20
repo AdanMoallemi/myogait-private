@@ -1,0 +1,75 @@
+# MyoGait Automated GPU Installer for Windows (PowerShell)
+Write-Host "=====================================================================" -ForegroundColor Cyan
+Write-Host "  MyoGait DCM Pipeline - Automated GPU Setup for Windows PC" -ForegroundColor Cyan
+Write-Host "  (NVIDIA RTX 6000 / RTX 3000 / RTX 4000 / Quadro / CUDA Workstations)" -ForegroundColor Cyan
+Write-Host "=====================================================================" -ForegroundColor Cyan
+Write-Host ""
+
+$condaCmd = $null
+if (Get-Command conda -ErrorAction SilentlyContinue) {
+    $condaCmd = "conda"
+} else {
+    $candidatePaths = @(
+        "$env:USERPROFILE\miniconda3\condabin\conda.bat",
+        "$env:USERPROFILE\anaconda3\condabin\conda.bat",
+        "$env:LOCALAPPDATA\miniconda3\condabin\conda.bat",
+        "$env:LOCALAPPDATA\anaconda3\condabin\conda.bat",
+        "C:\ProgramData\miniconda3\condabin\conda.bat",
+        "C:\ProgramData\anaconda3\condabin\conda.bat",
+        "C:\Miniconda3\condabin\conda.bat",
+        "C:\Anaconda3\condabin\conda.bat",
+        "$env:USERPROFILE\AppData\Local\Programs\Miniconda3\condabin\conda.bat",
+        "$env:USERPROFILE\AppData\Local\Programs\Anaconda3\condabin\conda.bat"
+    )
+    foreach ($p in $candidatePaths) {
+        if (Test-Path $p) {
+            $condaCmd = $p
+            break
+        }
+    }
+}
+
+if ($condaCmd) {
+    Write-Host "[FOUND] Conda detected: $condaCmd" -ForegroundColor Green
+    Write-Host ""
+    Write-Host "[1/5] Creating or updating Conda environment 'dcm-gait' (Python 3.11)..." -ForegroundColor Yellow
+    & $condaCmd create -y -n dcm-gait python=3.11
+
+    Write-Host ""
+    Write-Host "[2/5] Initializing conda environment..." -ForegroundColor Yellow
+    & $condaCmd "shell.powershell" "hook" | Out-String | Invoke-Expression
+    conda activate dcm-gait
+} else {
+    Write-Host "[NOTICE] Conda not found. Checking for Python..." -ForegroundColor Yellow
+    if (Get-Command python -ErrorAction SilentlyContinue) {
+        Write-Host "[1/5] Creating standard Python virtual environment 'venv_dcm'..." -ForegroundColor Yellow
+        python -m venv venv_dcm
+        Write-Host "[2/5] Activating virtual environment..." -ForegroundColor Yellow
+        .\venv_dcm\Scripts\Activate.ps1
+    } else {
+        Write-Host ""
+        Write-Host "[ERROR] Neither Conda nor Python was found on this system!" -ForegroundColor Red
+        Write-Host "Please install Miniconda for Windows: https://docs.anaconda.com/miniconda/" -ForegroundColor Yellow
+        Read-Host "Press Enter to exit"
+        exit 1
+    }
+}
+
+Write-Host ""
+Write-Host "[3/5] Installing PyTorch with CUDA 12.4 GPU acceleration..." -ForegroundColor Yellow
+pip install torch torchvision --index-url https://download.pytorch.org/whl/cu124
+
+Write-Host ""
+Write-Host "[4/5] Installing MyoGait and all dependencies..." -ForegroundColor Yellow
+pip install -e ".[all]"
+pip install streamlit onnxruntime-gpu openpyxl
+
+Write-Host ""
+Write-Host "[5/5] Checking GPU detection and hardware specs..." -ForegroundColor Yellow
+python -c "import torch; print('--------------------------------------------------'); print('PyTorch Version:', torch.__version__); print('CUDA Available:', torch.cuda.is_available()); print('Device Count:', torch.cuda.device_count()); print('GPU Name:', torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'NONE (CPU Mode)'); print('VRAM (GB):', round(torch.cuda.get_device_properties(0).total_memory / (1024**3), 2) if torch.cuda.is_available() else 0.0); print('--------------------------------------------------')"
+
+Write-Host ""
+Write-Host "=====================================================================" -ForegroundColor Green
+Write-Host "  Setup Complete! To launch the dashboard, run: .\run_dashboard.ps1" -ForegroundColor Green
+Write-Host "=====================================================================" -ForegroundColor Green
+Read-Host "Press Enter to finish"
