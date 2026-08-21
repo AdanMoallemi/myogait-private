@@ -28,7 +28,8 @@ fi
 
 echo "[4/4] Installing MyoGait, Dashboard, and Backends..."
 pip install -e ".[all]"
-pip install streamlit openpyxl termcolor safetensors timm einops easydict
+pip install streamlit openpyxl termcolor safetensors timm einops easydict iopath prettytable fvcore
+
 pip install git+https://github.com/facebookresearch/sapiens2.git --no-deps --ignore-requires-python
 
 

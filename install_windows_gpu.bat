@@ -81,7 +81,8 @@ exit /b 1
 echo.
 echo [3/5] Installing MyoGait and model dependencies...
 pip install -e ".[all]" --no-cache-dir
-pip install streamlit onnxruntime-gpu openpyxl termcolor safetensors timm einops easydict --no-cache-dir
+pip install streamlit onnxruntime-gpu openpyxl termcolor safetensors timm einops easydict iopath prettytable fvcore --no-cache-dir
+
 pip install git+https://github.com/facebookresearch/sapiens2.git --no-deps --ignore-requires-python
 
 
