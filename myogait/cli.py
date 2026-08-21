@@ -413,7 +413,7 @@ def cmd_setup_sapiens2(args):
             )
             sys.exit(1)
         print(f"Installing Meta sapiens from GitHub: {repo_url}")
-        cmd = [sys.executable, "-m", "pip", "install", repo_url]
+        cmd = [sys.executable, "-m", "pip", "install", repo_url, "--no-deps", "--ignore-requires-python"]
         subprocess.check_call(cmd)
         importlib.invalidate_caches()
 
