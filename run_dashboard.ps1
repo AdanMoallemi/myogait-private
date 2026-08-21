@@ -12,6 +12,12 @@ $env:TORCH_HOME = Join-Path $PSScriptRoot ".cache\torch"
 if (-not (Test-Path $env:MYOGAIT_MODELS_DIR)) { New-Item -ItemType Directory -Path $env:MYOGAIT_MODELS_DIR | Out-Null }
 if (-not (Test-Path $env:HF_HOME)) { New-Item -ItemType Directory -Path $env:HF_HOME | Out-Null }
 
+$envPython = Join-Path $envDir "python.exe"
+if (Test-Path $envPython) {
+    & $envPython -m streamlit run dcm_dashboard.py --server.address 127.0.0.1 --browser.gatherUsageStats false
+    exit 0
+}
+
 $condaCmd = $null
 if (Get-Command conda -ErrorAction SilentlyContinue) {
     $condaCmd = "conda"
@@ -44,5 +50,4 @@ if ($condaCmd) {
     & $actScript
 }
 
-# Bind to 127.0.0.1 (localhost only) to bypass Windows Firewall prompts without requiring admin privileges
 streamlit run dcm_dashboard.py --server.address 127.0.0.1 --browser.gatherUsageStats false

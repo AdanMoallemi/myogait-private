@@ -13,6 +13,13 @@ set "TORCH_HOME=%~dp0.cache\torch"
 if not exist "%MYOGAIT_MODELS_DIR%" mkdir "%MYOGAIT_MODELS_DIR%" 2>nul
 if not exist "%HF_HOME%" mkdir "%HF_HOME%" 2>nul
 
+:: If the environment python exists, run streamlit directly with zero activation overhead or warnings
+if exist "%ENV_DIR%\python.exe" (
+    "%ENV_DIR%\python.exe" -m streamlit run dcm_dashboard.py --server.address 127.0.0.1 --browser.gatherUsageStats false
+    pause
+    exit /b 0
+)
+
 set "CONDA_CMD="
 where conda >nul 2>nul
 if %errorlevel% equ 0 set "CONDA_CMD=conda"
@@ -32,6 +39,5 @@ if exist "%ENV_DIR%\Scripts\activate.bat" (
     call "%CONDA_CMD%" activate "%ENV_DIR%"
 )
 
-:: Bind to 127.0.0.1 (localhost only) to bypass Windows Firewall prompts without requiring admin privileges
 streamlit run dcm_dashboard.py --server.address 127.0.0.1 --browser.gatherUsageStats false
 pause
