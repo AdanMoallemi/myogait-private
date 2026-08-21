@@ -29,7 +29,7 @@ plot_arm_swing
 """
 
 import logging
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 import matplotlib
