@@ -73,6 +73,8 @@ Write-Host ""
 Write-Host "[3/5] Installing MyoGait and model dependencies..." -ForegroundColor Yellow
 pip install -e ".[all]" --no-cache-dir
 pip install streamlit onnxruntime-gpu openpyxl --no-cache-dir
+pip install git+https://github.com/facebookresearch/sapiens2.git --no-deps
+
 
 Write-Host ""
 Write-Host "[4/5] Installing PyTorch with CUDA 12.4 GPU acceleration on this drive..." -ForegroundColor Yellow
