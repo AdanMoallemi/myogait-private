@@ -323,6 +323,7 @@ def _write_run_readme(
     ├── events.png                 <- Event detection plot (heel-strike & toe-off)
     ├── cycles_left.png            <- Normalized left gait cycle curves (0-100%)
     ├── cycles_right.png           <- Normalized right gait cycle curves (0-100%)
+    ├── stroboscopic_gait_cycle.png <- Stroboscopic stick-figure gait progression sequence
     ├── skeleton_overlay.mp4       <- Video with AI pose overlay
     └── stickfigure_animation.gif  <- Anonymized de-identified stick-figure animation
 ```
@@ -630,6 +631,22 @@ def run_dcm_pipeline(
                     fig = plot_cycles(cycles_result, side=side)
                     fig.savefig(plots_p / f"cycles_{side}.png", dpi=150, bbox_inches="tight")
                     plt.close(fig)
+
+            # Generate Stroboscopic Gait Progression sequence (chronophotographic stick figures)
+            try:
+                from myogait.plotting import plot_stroboscopic_cycle
+                fig_strobe = plot_stroboscopic_cycle(
+                    data=data,
+                    cycles_result=cycles_result,
+                    visible_side=visible_side,
+                    scale_m=subject_height_m if (subject_height_m and subject_height_m > 0) else None,
+                )
+                fig_strobe.savefig(plots_p / "stroboscopic_gait_cycle.png", dpi=250, bbox_inches="tight")
+                plt.close(fig_strobe)
+                logger.info(f"      Stroboscopic progression plot saved: {plots_p.relative_to(out_p)}/stroboscopic_gait_cycle.png")
+            except Exception as e_strobe:
+                logger.warning(f"      Could not generate stroboscopic progression plot: {e_strobe}")
+
 
             # Render color-coded skeleton overlay video
             if video_path:
