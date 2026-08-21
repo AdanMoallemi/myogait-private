@@ -567,8 +567,118 @@ def render_skeleton_video(
 
     cap.release()
     writer.release()
+    _transcode_to_h264_inplace(output_path)
     logger.info(f"Skeleton video written to {output_path} ({frame_idx} frames)")
     return output_path
+
+
+def _transcode_to_h264_inplace(video_path: str) -> str:
+    """Safely transcode an MP4 to browser-native H.264 in-place if ffmpeg/imageio_ffmpeg is available."""
+    ffmpeg_bin = None
+    try:
+        import imageio_ffmpeg
+        ffmpeg_bin = imageio_ffmpeg.get_ffmpeg_exe()
+    except Exception:
+        import shutil
+        ffmpeg_bin = shutil.which("ffmpeg")
+
+    if not ffmpeg_bin or not os.path.exists(video_path):
+        return video_path
+
+    tmp_out = str(video_path) + ".h264_tmp.mp4"
+    try:
+        import subprocess
+        res = subprocess.run(
+            [ffmpeg_bin, "-y", "-i", str(video_path), "-vcodec", "libx264", "-pix_fmt", "yuv420p", tmp_out],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+        )
+        if res.returncode == 0 and os.path.exists(tmp_out) and os.path.getsize(tmp_out) > 0:
+            os.replace(tmp_out, video_path)
+    except Exception:
+        if os.path.exists(tmp_out):
+            try:
+                os.remove(tmp_out)
+            except Exception:
+                pass
+    return video_path
+
+
+def render_stickfigure_video(
+    data: dict,
+    output_path: str,
+    width: int = 1280,
+    height: int = 720,
+    fps: Optional[float] = None,
+    background_color: str = "white",
+    visible_side: str = "both",
+    show_angles: bool = True,
+    show_events: bool = True,
+    line_thickness: int = 3,
+    dot_radius: int = 5,
+    use_goliath: bool = False,
+    codec: str = "mp4v",
+) -> str:
+    """Render a high-speed OpenCV-powered anonymized stick-figure video.
+
+    Creates a clean, de-identified video on a plain background for clinical presentations
+    and publications, rendering in fractions of a second.
+    """
+    meta = data.get("meta", {})
+    src_fps = float(fps if fps is not None else meta.get("fps", 30.0))
+    if src_fps <= 0:
+        src_fps = 30.0
+
+    frames_data = data.get("frames", [])
+    angles_data = data.get("angles", {}).get("frames", [])
+
+    events_dict = data.get("events", {})
+    event_lookup: Dict[int, dict] = {}
+    if show_events and events_dict:
+        display_duration = max(1, int(src_fps * 0.35))
+        for key in ["left_hs", "right_hs", "left_to", "right_to"]:
+            ev_list = events_dict.get(key, [])
+            side = "left" if key.startswith("left") else "right"
+            ev_type = "HS" if key.endswith("_hs") else "TO"
+            for ev in ev_list:
+                fidx = ev.get("frame")
+                if fidx is not None:
+                    for hold_f in range(fidx, fidx + display_duration):
+                        event_lookup[hold_f] = {"type": ev_type, "side": side}
+
+    fourcc = getattr(cv2, "VideoWriter_fourcc", cv2.VideoWriter.fourcc)(*codec)
+    writer = cv2.VideoWriter(output_path, fourcc, src_fps, (width, height))
+    if not writer.isOpened():
+        fourcc = getattr(cv2, "VideoWriter_fourcc", cv2.VideoWriter.fourcc)(*"XVID")
+        writer = cv2.VideoWriter(output_path, fourcc, src_fps, (width, height))
+
+    bg_val = 255 if background_color == "white" else 30
+
+    for i, fd in enumerate(frames_data):
+        canvas = np.full((height, width, 3), bg_val, dtype=np.uint8)
+        lm = fd.get("landmarks", {})
+        goliath = fd.get("goliath308") if use_goliath else None
+        af = angles_data[i] if i < len(angles_data) else None
+        ev = event_lookup.get(fd.get("frame_idx", i))
+
+        out_frame = render_skeleton_frame(
+            frame_image=canvas,
+            landmarks=lm,
+            angles=af if show_angles else None,
+            events=ev if show_events else None,
+            visible_side=visible_side,
+            goliath308=goliath,
+            line_thickness=line_thickness,
+            dot_radius=dot_radius,
+        )
+        writer.write(out_frame)
+
+    writer.release()
+    _transcode_to_h264_inplace(output_path)
+    logger.info(f"Stick-figure video written to {output_path} ({len(frames_data)} frames)")
+    return output_path
+
 
 
 def render_stickfigure_animation(

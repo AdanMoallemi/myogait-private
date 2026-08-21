@@ -164,6 +164,7 @@ _LAZY_EXPORT_MAP = {
     "generate_longitudinal_report": ".report",
     "render_skeleton_video": ".video",
     "render_skeleton_frame": ".video",
+    "render_stickfigure_video": ".video",
     "render_stickfigure_animation": ".video",
 }
 

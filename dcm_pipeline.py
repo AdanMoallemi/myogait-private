@@ -323,7 +323,8 @@ def _write_run_readme(
     ├── events.png                 <- Event detection plot (heel-strike & toe-off)
     ├── cycles_left.png            <- Normalized left gait cycle curves (0-100%)
     ├── cycles_right.png           <- Normalized right gait cycle curves (0-100%)
-    └── skeleton_overlay.mp4       <- Video with AI pose overlay
+    ├── skeleton_overlay.mp4       <- Video with AI pose overlay
+    └── stickfigure_video.mp4      <- Anonymized de-identified stick-figure video
 ```
 
 ---
@@ -647,7 +648,22 @@ def run_dcm_pipeline(
                 except Exception as e_vid:
                     logger.warning(f"      Could not render skeleton overlay video: {e_vid}")
 
-            logger.info(f"      Plots saved in: {plots_p.relative_to(out_p)}")
+            # Render fast anonymized stick-figure video (GDPR / HIPAA de-identified video)
+            try:
+                from myogait.video import render_stickfigure_video
+                stick_mp4 = str(plots_p / "stickfigure_video.mp4")
+                render_stickfigure_video(
+                    data=data,
+                    output_path=stick_mp4,
+                    show_angles=True,
+                    show_events=True,
+                    visible_side=visible_side,
+                )
+                logger.info(f"      Anonymized stick-figure video saved: {plots_p.relative_to(out_p)}/stickfigure_video.mp4")
+            except Exception as e_stick:
+                logger.warning(f"      Could not render stick-figure video: {e_stick}")
+
+            logger.info(f"      Plots and videos saved in: {plots_p.relative_to(out_p)}")
         except Exception as e:
             logger.warning(f"      Could not generate plots: {e}")
 

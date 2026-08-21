@@ -391,41 +391,30 @@ with tab_pipe:
                                     else:
                                         st.info("No cycle data available for this side.")
 
-                        # Video
-                        st.header("3. Skeleton Overlay Video")
-                        skel_vid = run_out_dir / "plots" / "skeleton_overlay.mp4"
-                        if skel_vid.exists():
+                        # Video Visualizations
+                        st.header("3. Video Visualizations")
+                        tab_skel, tab_stick = st.tabs(["🎥 Skeleton Overlay Video", "👤 Anonymized Stick-Figure Video"])
+
+                        with tab_skel:
+                            skel_vid = run_out_dir / "plots" / "skeleton_overlay.mp4"
                             skel_vid_h264 = run_out_dir / "plots" / "skeleton_overlay_h264.mp4"
-                            if not skel_vid_h264.exists():
-                                ffmpeg_bin = None
-                                try:
-                                    import imageio_ffmpeg
-                                    ffmpeg_bin = imageio_ffmpeg.get_ffmpeg_exe()
-                                except Exception:
-                                    import shutil
-                                    ffmpeg_bin = shutil.which("ffmpeg")
-
-                                if ffmpeg_bin:
-                                    try:
-                                        subprocess.run(
-                                            [ffmpeg_bin, "-y", "-i", str(skel_vid), "-vcodec", "libx264", str(skel_vid_h264)],
-                                            stdout=subprocess.DEVNULL,
-                                            stderr=subprocess.DEVNULL,
-                                            check=False,
-                                        )
-                                    except Exception:
-                                        pass
-
-                            if skel_vid_h264.exists():
-                                st.video(str(skel_vid_h264))
+                            target_vid = skel_vid_h264 if skel_vid_h264.exists() else skel_vid
+                            if target_vid.exists():
+                                st.video(str(target_vid))
                             else:
-                                st.video(str(skel_vid))
-                        else:
-                            st.info("Skeleton overlay video was not generated for this session.")
+                                st.info("Skeleton overlay video was not generated for this session.")
+
+                        with tab_stick:
+                            stick_vid = run_out_dir / "plots" / "stickfigure_video.mp4"
+                            if stick_vid.exists():
+                                st.video(str(stick_vid))
+                                st.caption("Anonymized 2D Stick-Figure Video (De-identified for patient privacy, publications & conferences)")
+                            else:
+                                st.info("Anonymized stick figure video is not available for this session.")
 
                         # Downloads
                         st.header("4. Downloads & Clinical Exports")
-                        dl_col1, dl_col2 = st.columns(2)
+                        dl_col1, dl_col2, dl_col3 = st.columns(3)
                         
                         pdf_path = run_out_dir / "report" / "dcm_gait_report.pdf"
                         with dl_col1:
@@ -433,8 +422,14 @@ with tab_pipe:
                                 with open(pdf_path, "rb") as f:
                                     st.download_button("📄 Download Clinical PDF Report", f, file_name=f"{pat_sel}_gait_report.pdf", type="primary", use_container_width=True)
 
-                        xlsx_path = run_out_dir / "data" / "dcm_gait_analysis.xlsx"
+                        stick_path = run_out_dir / "plots" / "stickfigure_video.mp4"
                         with dl_col2:
+                            if stick_path.exists():
+                                with open(stick_path, "rb") as f_stick:
+                                    st.download_button("👤 Download Stick-Figure Video", f_stick, file_name=f"{pat_sel}_stickfigure.mp4", use_container_width=True)
+
+                        xlsx_path = run_out_dir / "data" / "dcm_gait_analysis.xlsx"
+                        with dl_col3:
                             if xlsx_path.exists():
                                 with open(xlsx_path, "rb") as f_xlsx:
                                     st.download_button("📊 Download Excel Workbook", f_xlsx, file_name=f"{pat_sel}_analysis.xlsx", use_container_width=True)
