@@ -335,19 +335,12 @@ def _load_model(path: str, device):
             )
         try:
             from sapiens.pose.models import init_model as _sapiens_init_model
-        except ImportError:
+        except ImportError as err:
             raise ImportError(
-                "Sapiens 2 needs Meta's `sapiens` package to load .safetensors "
-                "weights (it is not on PyPI, so myogait cannot pull it in via "
-                "extras). Two options:\n\n"
-                "  1) Run the helper command:\n"
-                "       myogait setup-sapiens2\n"
-                "     (downloads the weights, traces a .pt2, caches it)\n\n"
-                "  2) Install the package by hand:\n"
-                "       pip install git+https://github.com/facebookresearch/sapiens2.git\n\n"
-                "Once a .pt2 exists in ~/.myogait/models/ the `sapiens` package "
-                "is no longer needed at runtime."
-            )
+                f"Sapiens 2 import error ({err}). "
+                "If Meta's `sapiens` package is installed, a sub-dependency may be missing. "
+                "Run: pip install git+https://github.com/facebookresearch/sapiens2.git --no-deps --ignore-requires-python"
+            ) from err
         # ``init_model`` builds the architecture from a config file and
         # loads the checkpoint separately, so resolve the config that
         # matches the SafeTensors filename.
