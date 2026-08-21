@@ -37,4 +37,5 @@ if ($condaCmd) {
     & $actScript
 }
 
-streamlit run dcm_dashboard.py
+# Bind to 127.0.0.1 (localhost only) to bypass Windows Firewall prompts without requiring admin privileges
+streamlit run dcm_dashboard.py --server.address 127.0.0.1 --browser.gatherUsageStats false

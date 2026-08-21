@@ -25,5 +25,6 @@ if exist "%ENV_DIR%\Scripts\activate.bat" (
     call "%CONDA_CMD%" activate "%ENV_DIR%"
 )
 
-streamlit run dcm_dashboard.py
+:: Bind to 127.0.0.1 (localhost only) to bypass Windows Firewall prompts without requiring admin privileges
+streamlit run dcm_dashboard.py --server.address 127.0.0.1 --browser.gatherUsageStats false
 pause
