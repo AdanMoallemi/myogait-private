@@ -19,3 +19,6 @@ dependencies:
       - -e .[all]
       - streamlit>=1.30
       - onnxruntime-gpu
+      - git+https://github.com/facebookresearch/sapiens2.git
+
+

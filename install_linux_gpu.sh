@@ -29,6 +29,8 @@ fi
 echo "[4/4] Installing MyoGait, Dashboard, and Backends..."
 pip install -e ".[all]"
 pip install streamlit openpyxl
+pip install git+https://github.com/facebookresearch/sapiens2.git --no-deps
+
 
 echo "Verifying environment..."
 python -c "import torch; print('PyTorch Version:', torch.__version__); print('CUDA Available:', torch.cuda.is_available()); print('GPU Name:', torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'CPU')"
