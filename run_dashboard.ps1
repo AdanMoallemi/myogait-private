@@ -5,10 +5,14 @@ if (-not (Test-Path $envDir)) {
     $envDir = Join-Path $PSScriptRoot "env_dcm"
 }
 
-# Set HuggingFace and model cache on this drive to prevent C: space exhaustion
+# Set temp folder, HuggingFace and model cache on this drive to prevent C: space exhaustion
+$env:TEMP = Join-Path $PSScriptRoot ".tmp"
+$env:TMP = Join-Path $PSScriptRoot ".tmp"
+$env:TMPDIR = Join-Path $PSScriptRoot ".tmp"
 $env:MYOGAIT_MODELS_DIR = Join-Path $PSScriptRoot "models"
 $env:HF_HOME = Join-Path $PSScriptRoot ".cache\huggingface"
 $env:TORCH_HOME = Join-Path $PSScriptRoot ".cache\torch"
+if (-not (Test-Path $env:TEMP)) { New-Item -ItemType Directory -Path $env:TEMP | Out-Null }
 if (-not (Test-Path $env:MYOGAIT_MODELS_DIR)) { New-Item -ItemType Directory -Path $env:MYOGAIT_MODELS_DIR | Out-Null }
 if (-not (Test-Path $env:HF_HOME)) { New-Item -ItemType Directory -Path $env:HF_HOME | Out-Null }
 

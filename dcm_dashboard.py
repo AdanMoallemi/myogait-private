@@ -1,12 +1,17 @@
-import streamlit as st
 import os
+import sys
+import tempfile
 from pathlib import Path
-import json
-import datetime
-import subprocess
 
-# Configure cache and model directories on workspace drive to prevent C: drive exhaustion
+# Configure cache, model, and temp directories on workspace drive to prevent C: drive exhaustion
 BASE_DIR = Path(__file__).resolve().parent
+TEMP_DIR = BASE_DIR / ".tmp"
+TEMP_DIR.mkdir(parents=True, exist_ok=True)
+os.environ["TEMP"] = str(TEMP_DIR)
+os.environ["TMP"] = str(TEMP_DIR)
+os.environ["TMPDIR"] = str(TEMP_DIR)
+tempfile.tempdir = str(TEMP_DIR)
+
 MODELS_DIR = BASE_DIR / "models"
 MODELS_DIR.mkdir(parents=True, exist_ok=True)
 CACHE_DIR = BASE_DIR / ".cache"
@@ -14,6 +19,11 @@ CACHE_DIR.mkdir(parents=True, exist_ok=True)
 os.environ["MYOGAIT_MODELS_DIR"] = str(MODELS_DIR)
 os.environ.setdefault("HF_HOME", str(CACHE_DIR / "huggingface"))
 os.environ.setdefault("TORCH_HOME", str(CACHE_DIR / "torch"))
+
+import streamlit as st
+import json
+import datetime
+import subprocess
 
 from dcm_pipeline import run_dcm_pipeline
 

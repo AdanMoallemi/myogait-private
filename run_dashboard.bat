@@ -6,10 +6,14 @@ echo Starting MyoGait Clinical Dashboard...
 set "ENV_DIR=%~d0\conda_envs\dcm-gait"
 if not exist "%ENV_DIR%" set "ENV_DIR=%~dp0env_dcm"
 
-:: Set HuggingFace and model cache on this drive to prevent C: space exhaustion
+:: Set temp folder, HuggingFace and model cache on this drive to prevent C: space exhaustion
+set "TEMP=%~dp0.tmp"
+set "TMP=%~dp0.tmp"
+set "TMPDIR=%~dp0.tmp"
 set "MYOGAIT_MODELS_DIR=%~dp0models"
 set "HF_HOME=%~dp0.cache\huggingface"
 set "TORCH_HOME=%~dp0.cache\torch"
+if not exist "%~dp0.tmp" mkdir "%~dp0.tmp" 2>nul
 if not exist "%MYOGAIT_MODELS_DIR%" mkdir "%MYOGAIT_MODELS_DIR%" 2>nul
 if not exist "%HF_HOME%" mkdir "%HF_HOME%" 2>nul
 
