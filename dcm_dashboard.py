@@ -5,6 +5,16 @@ import json
 import datetime
 import subprocess
 
+# Configure cache and model directories on workspace drive to prevent C: drive exhaustion
+BASE_DIR = Path(__file__).resolve().parent
+MODELS_DIR = BASE_DIR / "models"
+MODELS_DIR.mkdir(parents=True, exist_ok=True)
+CACHE_DIR = BASE_DIR / ".cache"
+CACHE_DIR.mkdir(parents=True, exist_ok=True)
+os.environ["MYOGAIT_MODELS_DIR"] = str(MODELS_DIR)
+os.environ.setdefault("HF_HOME", str(CACHE_DIR / "huggingface"))
+os.environ.setdefault("TORCH_HOME", str(CACHE_DIR / "torch"))
+
 from dcm_pipeline import run_dcm_pipeline
 
 # -----------------

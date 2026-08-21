@@ -53,9 +53,12 @@ _STD = np.array([0.229, 0.224, 0.225], dtype=np.float32)
 
 # Local paths searched before downloading
 _DEFAULT_MODEL_PATHS = [
-    Path.home() / ".myogait" / "models",
+    Path(os.getenv("MYOGAIT_MODELS_DIR", "")) if os.getenv("MYOGAIT_MODELS_DIR") else None,
     Path.cwd() / "models",
+    Path(__file__).resolve().parent.parent.parent / "models",
+    Path.home() / ".myogait" / "models",
 ]
+_DEFAULT_MODEL_PATHS = [p for p in _DEFAULT_MODEL_PATHS if p is not None]
 
 # ── Model registry ───────────────────────────────────────────────────
 # Each entry: (filename, HuggingFace repo_id)
@@ -161,7 +164,10 @@ def download_model(model_size: str = "0.3b", dest: Optional[str] = None) -> str:
     filename, repo_id = _MODELS[model_size]
     revision = _MODEL_REVISIONS[model_size]
     expected_sha256 = _MODEL_SHA256[model_size]
-    dest_dir = dest or str(Path.home() / ".myogait" / "models")
+    dest_dir = dest or os.getenv("MYOGAIT_MODELS_DIR") or str(Path.cwd() / "models")
+    os.makedirs(dest_dir, exist_ok=True)
+    cache_dir = os.path.join(dest_dir, ".cache")
+    os.makedirs(cache_dir, exist_ok=True)
 
     if revision in {"main", "master"}:
         logger.warning(
@@ -180,6 +186,7 @@ def download_model(model_size: str = "0.3b", dest: Optional[str] = None) -> str:
         repo_id=repo_id,
         filename=filename,
         local_dir=dest_dir,
+        cache_dir=cache_dir,
         revision=revision,
     )
     _verify_model_integrity(path, expected_sha256, f"sapiens-{model_size}")
