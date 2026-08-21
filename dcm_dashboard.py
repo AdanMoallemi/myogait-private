@@ -35,15 +35,15 @@ if not ASSESSOR_DB.exists():
         json.dump(["Clinical Assessor A", "Clinical Assessor B"], f)
 
 FRAME_QUALITY_PRESETS = {
+    "Standard (recommended)": {
+        "edge_margin": 0.02,
+        "min_leg_vis": 0.30,
+        "adaptive_leg_vis": False,
+    },
     "Distant subject": {
         "edge_margin": 0.005,
         "min_leg_vis": 0.05,
         "adaptive_leg_vis": True,
-    },
-    "Standard": {
-        "edge_margin": 0.02,
-        "min_leg_vis": 0.30,
-        "adaptive_leg_vis": False,
     },
 }
 
