@@ -19,6 +19,8 @@ CACHE_DIR.mkdir(parents=True, exist_ok=True)
 os.environ["MYOGAIT_MODELS_DIR"] = str(MODELS_DIR)
 os.environ.setdefault("HF_HOME", str(CACHE_DIR / "huggingface"))
 os.environ.setdefault("TORCH_HOME", str(CACHE_DIR / "torch"))
+os.environ.setdefault("TRANSFORMERS_VERBOSITY", "error")
+os.environ.setdefault("TRANSFORMERS_NO_ADVISORY_WARNINGS", "1")
 
 import streamlit as st
 import json
