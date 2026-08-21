@@ -379,44 +379,86 @@ with tab_pipe:
                                     else:
                                         st.info("No cycle data available for this side.")
 
-                        # Video
-                        st.header("3. Skeleton Overlay Video")
-                        skel_vid = run_out_dir / "plots" / "skeleton_overlay.mp4"
-                        if skel_vid.exists():
-                            skel_vid_h264 = run_out_dir / "plots" / "skeleton_overlay_h264.mp4"
-                            if not skel_vid_h264.exists():
-                                ffmpeg_bin = None
-                                try:
-                                    import imageio_ffmpeg
-                                    ffmpeg_bin = imageio_ffmpeg.get_ffmpeg_exe()
-                                except Exception:
-                                    import shutil
-                                    ffmpeg_bin = shutil.which("ffmpeg")
-
-                                if ffmpeg_bin:
+                        # Video Visualizations
+                        st.header("3. Video & Skeleton Visualizations")
+                        tab_skel, tab_stick = st.tabs(["🎥 Skeleton Overlay Video", "👤 Anonymized Stick-Figure Animation"])
+                        
+                        with tab_skel:
+                            skel_vid = run_out_dir / "plots" / "skeleton_overlay.mp4"
+                            if skel_vid.exists():
+                                skel_vid_h264 = run_out_dir / "plots" / "skeleton_overlay_h264.mp4"
+                                if not skel_vid_h264.exists():
+                                    ffmpeg_bin = None
                                     try:
-                                        subprocess.run(
-                                            [ffmpeg_bin, "-y", "-i", str(skel_vid), "-vcodec", "libx264", str(skel_vid_h264)],
-                                            stdout=subprocess.DEVNULL,
-                                            stderr=subprocess.DEVNULL,
-                                            check=False,
-                                        )
+                                        import imageio_ffmpeg
+                                        ffmpeg_bin = imageio_ffmpeg.get_ffmpeg_exe()
                                     except Exception:
-                                        pass
+                                        import shutil
+                                        ffmpeg_bin = shutil.which("ffmpeg")
 
-                            if skel_vid_h264.exists():
-                                st.video(str(skel_vid_h264))
+                                    if ffmpeg_bin:
+                                        try:
+                                            subprocess.run(
+                                                [ffmpeg_bin, "-y", "-i", str(skel_vid), "-vcodec", "libx264", str(skel_vid_h264)],
+                                                stdout=subprocess.DEVNULL,
+                                                stderr=subprocess.DEVNULL,
+                                                check=False,
+                                            )
+                                        except Exception:
+                                            pass
+
+                                if skel_vid_h264.exists():
+                                    st.video(str(skel_vid_h264))
+                                else:
+                                    st.video(str(skel_vid))
                             else:
-                                st.video(str(skel_vid))
-                        else:
-                            st.info("Skeleton overlay video was not generated for this session.")
+                                st.info("Skeleton overlay video was not generated for this session.")
+
+                        with tab_stick:
+                            stick_gif = run_out_dir / "plots" / "stickfigure_animation.gif"
+                            if not stick_gif.exists():
+                                json_file = run_out_dir / "data" / "dcm_gait_data.json"
+                                if json_file.exists():
+                                    try:
+                                        from myogait.video import render_stickfigure_animation
+                                        from myogait import load_json
+                                        d_json = load_json(str(json_file))
+                                        render_stickfigure_animation(
+                                            data=d_json,
+                                            output_path=str(stick_gif),
+                                            format="gif",
+                                            show_angles=True,
+                                            show_trail=True,
+                                            background_color="white",
+                                        )
+                                    except Exception as e_s:
+                                        st.warning(f"Could not generate stick-figure animation: {e_s}")
+
+                            if stick_gif.exists():
+                                st.image(str(stick_gif), caption="Anonymized 2D Stick-Figure Animation (Patient Privacy / De-identified for Conferences & Publications)", use_container_width=True)
+                            else:
+                                st.info("Stick figure animation is not available for this session.")
 
                         # Downloads
-                        st.header("4. Downloads")
+                        st.header("4. Downloads & Clinical Exports")
+                        dl_col1, dl_col2, dl_col3 = st.columns(3)
+                        
                         pdf_path = run_out_dir / "report" / "dcm_gait_report.pdf"
-                        if pdf_path.exists():
-                            with open(pdf_path, "rb") as f:
-                                st.download_button("📄 Download Clinical PDF Report", f, file_name=f"{pat_sel}_gait_report.pdf", type="primary")
+                        with dl_col1:
+                            if pdf_path.exists():
+                                with open(pdf_path, "rb") as f:
+                                    st.download_button("📄 Download Clinical PDF Report", f, file_name=f"{pat_sel}_gait_report.pdf", type="primary", use_container_width=True)
+
+                        with dl_col2:
+                            if stick_gif.exists():
+                                with open(stick_gif, "rb") as f_stick:
+                                    st.download_button("👤 Download Stick-Figure GIF", f_stick, file_name=f"{pat_sel}_stickfigure.gif", mime="image/gif", use_container_width=True)
+
+                        xlsx_path = run_out_dir / "data" / "dcm_gait_analysis.xlsx"
+                        with dl_col3:
+                            if xlsx_path.exists():
+                                with open(xlsx_path, "rb") as f_xlsx:
+                                    st.download_button("📊 Download Excel Workbook", f_xlsx, file_name=f"{pat_sel}_analysis.xlsx", use_container_width=True)
 
                     except Exception as e:
                         st.error(f"Error rendering results: {e}")
