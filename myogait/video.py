@@ -630,8 +630,16 @@ def render_stickfigure_video(
     if src_fps <= 0:
         src_fps = 30.0
 
+    # Match original video resolution if available
+    vid_w = int(meta.get("width", width)) if meta.get("width") else width
+    vid_h = int(meta.get("height", height)) if meta.get("height") else height
+
     frames_data = data.get("frames", [])
     angles_data = data.get("angles", {}).get("frames", [])
+
+    # If landmarks were flipped internally for standardized gait cycle math,
+    # un-flip x so the stick figure matches the actual physical video orientation.
+    was_flipped = (data.get("extraction") or {}).get("was_flipped", False)
 
     events_dict = data.get("events", {})
     event_lookup: Dict[int, dict] = {}
@@ -648,17 +656,31 @@ def render_stickfigure_video(
                         event_lookup[hold_f] = {"type": ev_type, "side": side}
 
     fourcc = getattr(cv2, "VideoWriter_fourcc", cv2.VideoWriter.fourcc)(*codec)
-    writer = cv2.VideoWriter(output_path, fourcc, src_fps, (width, height))
+    writer = cv2.VideoWriter(output_path, fourcc, src_fps, (vid_w, vid_h))
     if not writer.isOpened():
         fourcc = getattr(cv2, "VideoWriter_fourcc", cv2.VideoWriter.fourcc)(*"XVID")
-        writer = cv2.VideoWriter(output_path, fourcc, src_fps, (width, height))
+        writer = cv2.VideoWriter(output_path, fourcc, src_fps, (vid_w, vid_h))
 
     bg_val = 255 if background_color == "white" else 30
 
     for i, fd in enumerate(frames_data):
-        canvas = np.full((height, width, 3), bg_val, dtype=np.uint8)
+        canvas = np.full((vid_h, vid_w, 3), bg_val, dtype=np.uint8)
         lm = fd.get("landmarks", {})
         goliath = fd.get("goliath308") if use_goliath else None
+
+        # Un-flip x coordinates if extraction used flip_if_right
+        if was_flipped and lm:
+            lm = {
+                name: {**val, "x": 1.0 - val["x"]}
+                if val.get("x") is not None else val
+                for name, val in lm.items()
+            }
+        if was_flipped and goliath:
+            goliath = [
+                [1.0 - pt[0], pt[1], pt[2]] if len(pt) >= 3 else [1.0 - pt[0], pt[1]]
+                for pt in goliath
+            ]
+
         af = angles_data[i] if i < len(angles_data) else None
         ev = event_lookup.get(fd.get("frame_idx", i))
 
