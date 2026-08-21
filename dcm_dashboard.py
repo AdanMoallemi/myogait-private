@@ -385,9 +385,31 @@ with tab_pipe:
                         if skel_vid.exists():
                             skel_vid_h264 = run_out_dir / "plots" / "skeleton_overlay_h264.mp4"
                             if not skel_vid_h264.exists():
-                                subprocess.run(["ffmpeg", "-y", "-i", str(skel_vid), "-vcodec", "libx264", str(skel_vid_h264)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                            if skel_vid_h264.exists(): st.video(str(skel_vid_h264))
-                            else: st.video(str(skel_vid))
+                                ffmpeg_bin = None
+                                try:
+                                    import imageio_ffmpeg
+                                    ffmpeg_bin = imageio_ffmpeg.get_ffmpeg_exe()
+                                except Exception:
+                                    import shutil
+                                    ffmpeg_bin = shutil.which("ffmpeg")
+
+                                if ffmpeg_bin:
+                                    try:
+                                        subprocess.run(
+                                            [ffmpeg_bin, "-y", "-i", str(skel_vid), "-vcodec", "libx264", str(skel_vid_h264)],
+                                            stdout=subprocess.DEVNULL,
+                                            stderr=subprocess.DEVNULL,
+                                            check=False,
+                                        )
+                                    except Exception:
+                                        pass
+
+                            if skel_vid_h264.exists():
+                                st.video(str(skel_vid_h264))
+                            else:
+                                st.video(str(skel_vid))
+                        else:
+                            st.info("Skeleton overlay video was not generated for this session.")
 
                         # Downloads
                         st.header("4. Downloads")
