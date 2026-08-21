@@ -159,7 +159,6 @@ _LAZY_EXPORT_MAP = {
     "plot_cadence_profile": ".plotting",
     "plot_rom_summary": ".plotting",
     "plot_butterfly": ".plotting",
-    "plot_stroboscopic_cycle": ".plotting",
     "animate_normative_comparison": ".plotting",
     "generate_report": ".report",
     "generate_longitudinal_report": ".report",
