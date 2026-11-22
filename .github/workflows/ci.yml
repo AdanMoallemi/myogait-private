@@ -10,6 +10,9 @@ on:
       - master
       - main
 
+permissions:
+  contents: read
+
 jobs:
   test:
     runs-on: ${{ matrix.os }}
@@ -28,6 +31,7 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
           allow-prereleases: true
+          cache: pip
 
       - name: Install system dependencies
         if: runner.os == 'Linux'
@@ -48,7 +52,9 @@ jobs:
         if: matrix.python-version == '3.14'
         run: |
           python -m pip install --upgrade pip
-          python -m pip install --no-deps gaitkit==1.3.1
+          # Match myogait's gaitkit>=1.4.8 floor; --no-deps skips ezc3d (no 3.14
+          # wheel), which gaitkit only imports lazily for C3D file I/O.
+          python -m pip install --no-deps "gaitkit>=1.4.8"
           python -m pip install numpy pandas scipy opencv-python-headless matplotlib
           python -m pip install pytest pytest-cov openpyxl pyyaml build twine ruff statsmodels PyWavelets
           python -m pip install --no-deps -e .
@@ -56,12 +62,48 @@ jobs:
       - name: Run linting
         run: ruff check myogait/ tests/ --select E,W,F --ignore E501
 
+      - name: Check installed dependencies
+        # Skipped on 3.14: ezc3d has no 3.14 wheel, so it is deliberately not
+        # installed (gaitkit imports it lazily), which pip check would flag.
+        if: matrix.python-version != '3.14'
+        run: python -m pip check
+
       - name: Run tests
         run: python -m pytest tests/ -v --tb=short -q
 
       - name: Coverage gate (myogait >= 75%)
         if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.13'
         run: python -m pytest tests/ --cov=myogait --cov-report=term-missing --cov-fail-under=75 -q
+
+  # Real-backend job: the main matrix only installs [dev], so every pose
+  # backend test skips itself and the green badge proves nothing about
+  # extraction. This job installs mediapipe (CPU-only) and exercises a
+  # real end-to-end extraction path.
+  backend-mediapipe:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          # libegl1/libgles2: MediaPipe's Tasks API dlopens libEGL.so.1
+          # even for CPU inference on headless runners.
+          sudo apt-get install -y libgl1 libglib2.0-0 libegl1 libgles2
+
+      - name: Install with mediapipe backend
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev,mediapipe]"
+
+      - name: End-to-end extraction test (real backend)
+        run: python -m pytest tests/test_mediapipe_e2e.py -v --tb=short
 
   build:
     needs: test
@@ -91,3 +133,5 @@ jobs:
           /tmp/pkg-smoke/bin/pip install --upgrade pip
           /tmp/pkg-smoke/bin/pip install dist/*.whl
           /tmp/pkg-smoke/bin/python -c "import myogait; print(myogait.__version__)"
+          /tmp/pkg-smoke/bin/myogait --help
+          /tmp/pkg-smoke/bin/pip check

@@ -72,6 +72,22 @@ import numpy as np
 
 logger = logging.getLogger(__name__)
 
+_DEFAULT_FPS = 30.0
+
+
+def _frame_rate(data: dict) -> float:
+    """Return a finite, positive acquisition rate from a pivot document."""
+    meta = data.get("meta")
+    raw_fps = meta.get("fps", _DEFAULT_FPS) if isinstance(meta, dict) else _DEFAULT_FPS
+    try:
+        fps = float(raw_fps)
+    except (TypeError, ValueError):
+        fps = _DEFAULT_FPS
+
+    if not np.isfinite(fps) or fps <= 0:
+        return _DEFAULT_FPS
+    return fps
+
 
 def _symmetry_index(left: float, right: float) -> float:
     """SI = |L - R| / (0.5 * (L + R)) * 100. Returns 0 if both are 0."""
@@ -103,8 +119,10 @@ def analyze_gait(
     data: dict,
     cycles: dict,
     height_m: Optional[float] = None,
-    enable_bilateral: bool = True,
-    visible_side: str = "both",
+    femur_mm: Optional[float] = None,
+    foot_mm: Optional[float] = None,
+    femur_ratio: Optional[float] = None,
+    restore_ankle_dynamics: bool = False,
 ) -> dict:
     """Compute comprehensive gait statistics.
 
@@ -119,8 +137,24 @@ def analyze_gait(
     cycles : dict
         Output of ``segment_cycles()``.
     height_m : float, optional
-        Subject height in meters. Enables calibrated step length
-        and walking speed in m/s.
+        Subject height in meters (fallback anthropometric reference).
+    femur_mm : float, optional
+        Subject femur length in millimetres.
+    foot_mm : float, optional
+        Subject foot length (heel → longest toe) in millimetres.
+    femur_ratio : float, optional
+        Femur-length-to-stature ratio used with ``height_m`` when no
+        measured femur is available.  Defaults to the healthy-adult
+        :data:`FEMUR_HEIGHT_RATIO` (0.245, Winter 2009); override for
+        populations where that average does not hold (pediatric,
+        contractures, bone deformity).
+
+    Note
+    ----
+    See :func:`step_length` for the anthropometric scale hierarchy:
+    ``femur_mm`` + ``foot_mm`` gives the tightest calibration (average
+    of two independent scales); a single measurement or ``height_m``
+    are all acceptable fallbacks.
 
     Returns
     -------
@@ -139,35 +173,113 @@ def analyze_gait(
         raise TypeError("data must be a dict")
     if not isinstance(cycles, dict):
         raise TypeError("cycles must be a dict")
-    fps = data.get("meta", {}).get("fps", 30.0)
+    fps = _frame_rate(data)
     events = data.get("events", {})
     angles = data.get("angles", {})
 
-    # Deep mask: clone cycles dict and filter to only the visible side
-    masked_cycles = dict(cycles)
-    if visible_side != "both":
-        masked_cycles["cycles"] = [c for c in cycles.get("cycles", []) if c["side"] == visible_side]
+    # Optional: restore the markerless ankle push-off the pose estimator
+    # attenuates (calibrated deconvolution, mean-restoration). Operates on a
+    # copy so the caller's cycles are untouched; see ankle_dynamics.
+    if restore_ankle_dynamics:
+        from .ankle_dynamics import restore_ankle_dynamics as _restore_ankle
+        cycles = _restore_ankle(cycles)
 
-    cycle_list = masked_cycles.get("cycles", [])
+    cycle_list = cycles.get("cycles", [])
+
+    # Resolve anthropometric references ONCE so step_length and walking_speed
+    # calibrate identically. Back-fill any unset argument from data["subject"];
+    # previously walking_speed back-filled height from the pivot's subject block
+    # while step_length did not, so on a pivot that stored height but got no
+    # explicit argument the two disagreed on whether the trial was calibrated --
+    # one reporting metres, the other image-normalised units.
+    subject = data.get("subject") or {}
+    if height_m is None:
+        height_m = subject.get("height_m")
+    if femur_mm is None:
+        femur_mm = subject.get("femur_length_mm", subject.get("femur_mm"))
+    if foot_mm is None:
+        foot_mm = subject.get("foot_length_mm", subject.get("foot_mm"))
 
     stats = {
-        "spatiotemporal": _spatiotemporal(cycle_list, events, fps, enable_bilateral=enable_bilateral),
-        "symmetry": _symmetry(cycle_list, angles, masked_cycles.get("summary")) if enable_bilateral else {},
+        "spatiotemporal": _spatiotemporal(cycle_list, events, fps),
+        "symmetry": _symmetry(cycle_list, angles, cycles.get("summary")),
         "variability": _variability(cycle_list),
         "clinical_markers": _clinical_markers(cycle_list),
         "regularity": regularity_index(data),
         "harmonic_ratio": harmonic_ratio(data),
-        "step_length": step_length(data, masked_cycles, height_m),
-        "walking_speed": walking_speed(data, masked_cycles, height_m),
-        "pathologies": detect_pathologies(data, masked_cycles),
+        "step_length": step_length(data, cycles, height_m, femur_mm, foot_mm, femur_ratio),
+        "walking_speed": walking_speed(data, cycles, height_m, femur_mm, foot_mm, femur_ratio),
+        "pathologies": detect_pathologies(data, cycles),
         "pathology_flags": [],
     }
 
     # Detect pathology flags
     stats["pathology_flags"] = _detect_flags(stats)
     _add_legacy_summary_aliases(stats)
+    _apply_plausibility_guards(stats)
 
     return stats
+
+
+# Physiological bounds (metres / m·s⁻¹) used only to catch a grossly wrong
+# calibration -- e.g. a raw-marker scale that inflates every length ~10x. The
+# floors are deliberately permissive so genuinely short pathological steps
+# (Institut de Myologie populations) are never flagged as errors; the ceilings
+# reject the physically impossible. Bounds apply only to calibrated (metric)
+# outputs; normalised units carry no physical scale to check against.
+_PLAUSIBLE_STEP_M = (0.05, 1.2)
+_PLAUSIBLE_STRIDE_M = (0.1, 2.4)
+_PLAUSIBLE_SPEED_MS = (0.05, 3.0)
+
+
+def _apply_plausibility_guards(stats: dict) -> None:
+    """Flag non-physiological metric outputs machine-readably.
+
+    Invariant checks used to live only in log messages, so a caller consuming
+    the returned ``stats`` dict had no way to know a value was implausible.
+    This records any breach under ``stats["warnings"]`` (a list of dicts) AND
+    flips ``valid_for_progression`` to ``False`` on the offending block, so a
+    grossly mis-scaled step/stride/speed can no longer be read as trustworthy.
+    """
+    warnings: list = stats.setdefault("warnings", [])
+
+    def _check(block_key: str, value, bounds, label: str) -> None:
+        if value is None:
+            return
+        try:
+            v = float(value)
+        except (TypeError, ValueError):
+            return
+        if not np.isfinite(v):
+            return
+        lo, hi = bounds
+        if v < lo or v > hi:
+            block = stats.get(block_key)
+            if isinstance(block, dict):
+                block["valid_for_progression"] = False
+            warnings.append({
+                "metric": label,
+                "value": round(v, 4),
+                "plausible_range": [lo, hi],
+                "message": (
+                    f"{label} = {v:.3g} is outside the physiological range "
+                    f"[{lo}, {hi}] -- likely a calibration error; treat the "
+                    f"metric outputs as unreliable."
+                ),
+            })
+
+    sl = stats.get("step_length", {})
+    if isinstance(sl, dict) and sl.get("unit") == "m":
+        for side in ("left", "right"):
+            _check("step_length", sl.get(f"step_length_{side}"),
+                   _PLAUSIBLE_STEP_M, f"step_length_{side}")
+            _check("step_length", sl.get(f"stride_length_{side}"),
+                   _PLAUSIBLE_STRIDE_M, f"stride_length_{side}")
+
+    ws = stats.get("walking_speed", {})
+    if isinstance(ws, dict) and ws.get("unit") == "m/s":
+        _check("walking_speed", ws.get("speed_mean"),
+               _PLAUSIBLE_SPEED_MS, "walking_speed")
 
 
 def _add_legacy_summary_aliases(stats: dict) -> None:
@@ -190,7 +302,29 @@ def _add_legacy_summary_aliases(stats: dict) -> None:
         stats["stance_pct"] = round(float(np.mean(stance_vals)), 1)
 
 
-def _spatiotemporal(cycle_list: list, events: dict, fps: float, enable_bilateral: bool = True) -> dict:
+def _ordered_heel_strikes(events: dict) -> list[tuple[int, str]]:
+    """Return heel strikes ordered by frame, tagged with their side."""
+    strikes = [
+        (event["frame"], side)
+        for side, key in (("left", "left_hs"), ("right", "right_hs"))
+        for event in events.get(key, [])
+    ]
+    return sorted(strikes)
+
+
+def _frame_index_map(frames: list) -> dict:
+    """Map each event ``frame_idx`` to its position in ``frames``.
+
+    Events and cycles store the *original-video* frame index, but ``frames``
+    holds only the analysed window (which may start late and be shorter than
+    the source clip). Indexing ``frames[frame_idx]`` positionally therefore
+    reads the wrong frame -- or trips a ``>= len(frames)`` guard that silently
+    drops the strike. Always resolve an event/cycle frame through this map.
+    """
+    return {f.get("frame_idx", i): i for i, f in enumerate(frames)}
+
+
+def _spatiotemporal(cycle_list: list, events: dict, fps: float) -> dict:
     """Compute spatio-temporal parameters."""
     left_cycles = [c for c in cycle_list if c["side"] == "left"]
     right_cycles = [c for c in cycle_list if c["side"] == "right"]
@@ -206,17 +340,11 @@ def _spatiotemporal(cycle_list: list, events: dict, fps: float, enable_bilateral
     cadence = (60.0 / stride_time_mean * 2) if stride_time_mean > 0 else 0.0
 
     # Step time (alternating feet)
-    all_hs = []
-    for ev in events.get("left_hs", []):
-        all_hs.append({"frame": ev["frame"], "side": "left"})
-    for ev in events.get("right_hs", []):
-        all_hs.append({"frame": ev["frame"], "side": "right"})
-    all_hs.sort(key=lambda e: e["frame"])
-
     step_times = []
-    for i in range(len(all_hs) - 1):
-        if all_hs[i]["side"] != all_hs[i + 1]["side"]:
-            dt = (all_hs[i + 1]["frame"] - all_hs[i]["frame"]) / fps
+    all_hs = _ordered_heel_strikes(events)
+    for (frame, side), (next_frame, next_side) in zip(all_hs, all_hs[1:]):
+        if side != next_side:
+            dt = (next_frame - frame) / fps
             step_times.append(dt)
 
     step_time_mean = float(np.mean(step_times)) if step_times else stride_time_mean / 2
@@ -247,7 +375,7 @@ def _spatiotemporal(cycle_list: list, events: dict, fps: float, enable_bilateral
 
     # Double support (clamped to 0 — negative values are physically impossible)
     double_support = None
-    if stance_left is not None and stance_right is not None and enable_bilateral:
+    if stance_left is not None and stance_right is not None:
         double_support = round(max(0, stance_left + stance_right - 100), 1)
 
     return {
@@ -429,6 +557,22 @@ def _detect_flags(stats: dict) -> List[str]:
 # ── Regularity index (autocorrelation) ───────────────────────────────
 
 
+def _positive_autocorrelation(signal: np.ndarray) -> np.ndarray:
+    """Return normalized non-negative-lag autocorrelation efficiently.
+
+    SciPy selects the direct implementation for short recordings and an FFT
+    implementation for long recordings. The latter avoids the quadratic cost
+    of ``numpy.correlate`` for multi-minute acquisitions while preserving the
+    same autocorrelation values up to floating-point precision.
+    """
+    from scipy.signal import correlate
+
+    n_samples = len(signal)
+    autocorr = correlate(signal, signal, mode="full", method="auto")[n_samples - 1 :]
+    energy = autocorr[0]
+    return autocorr / energy if energy else np.zeros_like(autocorr)
+
+
 def regularity_index(data: dict, signal_key: str = "LEFT_ANKLE") -> dict:
     """Compute stride regularity using autocorrelation.
 
@@ -450,7 +594,7 @@ def regularity_index(data: dict, signal_key: str = "LEFT_ANKLE") -> dict:
         ``symmetry_ratio``. Values are None if insufficient data.
     """
     frames = data.get("frames", [])
-    fps = data.get("meta", {}).get("fps", 30.0)
+    fps = _frame_rate(data)
 
     if len(frames) < 30:
         return {"step_regularity": None, "stride_regularity": None, "symmetry_ratio": None}
@@ -477,10 +621,7 @@ def regularity_index(data: dict, signal_key: str = "LEFT_ANKLE") -> dict:
     y = y - np.mean(y)
 
     # Autocorrelation (unbiased)
-    n = len(y)
-    autocorr = np.correlate(y, y, mode="full")
-    autocorr = autocorr[n - 1:]  # positive lags only
-    autocorr = autocorr / autocorr[0]  # normalize
+    autocorr = _positive_autocorrelation(y)
 
     # Expected step period: ~0.4-0.7s → 12-21 frames at 30fps
     min_lag = max(1, int(0.3 * fps))
@@ -555,12 +696,25 @@ def harmonic_ratio(data: dict, signal_key: str = "LEFT_ANKLE") -> dict:
     if len(frames) < 60:
         return {"hr_ap": None, "hr_vertical": None}
 
+    # Take the AP/vertical signal RELATIVE TO THE PELVIS midpoint. The absolute
+    # ankle-x carries the whole-trial forward progression (a low-frequency ramp
+    # on a fixed camera) or, with a tracking/panning camera, has that
+    # progression cancelled -- either way the spectral content is corrupted and
+    # the harmonic ratio is not comparable across captures. Subtracting the
+    # pelvis leaves the limb's oscillation about the body, immune to camera
+    # motion and to walking translation.
     x_vals, y_vals = [], []
     for f in frames:
-        lm = f.get("landmarks", {}).get(signal_key)
-        if lm:
-            x_vals.append(float(lm.get("x", np.nan)))
-            y_vals.append(float(lm.get("y", np.nan)))
+        lm = f.get("landmarks", {})
+        seg = lm.get(signal_key)
+        lhip = lm.get("LEFT_HIP")
+        rhip = lm.get("RIGHT_HIP")
+        if seg and lhip and rhip:
+            sx, sy = seg.get("x", np.nan), seg.get("y", np.nan)
+            pel_x = (lhip.get("x", np.nan) + rhip.get("x", np.nan)) / 2.0
+            pel_y = (lhip.get("y", np.nan) + rhip.get("y", np.nan)) / 2.0
+            x_vals.append(float(sx - pel_x))
+            y_vals.append(float(sy - pel_y))
         else:
             x_vals.append(np.nan)
             y_vals.append(np.nan)
@@ -606,18 +760,213 @@ def harmonic_ratio(data: dict, signal_key: str = "LEFT_ANKLE") -> dict:
 
 # ── Step length estimation ───────────────────────────────────────────
 
+# Femur-length-to-stature ratio used when only body height is known.
+# Source: Winter DA, "Biomechanics and Motor Control of Human Movement"
+# (4th ed., 2009), anthropometric segment tables: thigh length ≈ 0.245 ×
+# stature for healthy adults (published range across tables ~0.232-0.255).
+# CAVEAT: this is a healthy-adult average. Flexion contractures, femoral
+# torsion, bone deformity or scoliosis (common in neuromuscular
+# populations) can push the true ratio well outside that range — prefer a
+# measured femur_mm whenever available, or override this module-level
+# constant for a specific population.
+FEMUR_HEIGHT_RATIO: float = 0.245
+
+
+def _estimate_pixel_to_meter_scale(
+    frames: list,
+    height_m: Optional[float] = None,
+    femur_mm: Optional[float] = None,
+    foot_mm: Optional[float] = None,
+    femur_ratio: Optional[float] = None,
+    width: float = 1.0,
+    height: float = 1.0,
+) -> float:
+    """Pick the best available anthropometric reference and return the
+    scale factor (metres per **source pixel**).
+
+    Landmarks are normalised per axis (x / image-width, y / image-height),
+    so on a non-square frame one x-unit and one y-unit span different
+    real distances.  Reference segments and gait distances are therefore
+    de-normalised to source pixels (``x·width``, ``y·height``) before the
+    ratio is taken, making the scale isotropic — a mostly-vertical
+    reference (femur) can then be applied to a horizontal distance (step
+    length) without an aspect-ratio error.  With ``width = height = 1``
+    the behaviour is the historical metres-per-normalised-unit scale.
+
+    Order of preference:
+    - ``femur_mm`` + ``foot_mm``: average of both independent scales.
+    - ``femur_mm`` alone: use femur length directly.
+    - ``foot_mm`` alone: use foot length (heel → LEFT_FOOT_INDEX).
+    - ``height_m`` alone: femur ≈ ``femur_ratio`` × height (default
+      :data:`FEMUR_HEIGHT_RATIO` = 0.245, Winter 2009).
+    - Nothing → returns 1.0.
+    """
+    sx = float(width) if width else 1.0
+    sy = float(height) if height else 1.0
+
+    def _median_femur_px() -> Optional[float]:
+        # Median over the WHOLE recording, not just the first 60 frames: on a
+        # tracking/panning shot the subject is often still entering (far, small)
+        # in those opening frames, so a first-60 femur under-measures the real
+        # segment and inflates the metre scale -- step/stride came out ~1.5x too
+        # long vs Vicon on subject-following clips. The full-recording median is
+        # robust to the entry/exit frames and matches the marker reference.
+        femur_lengths = []
+        for f in frames:
+            lm = f.get("landmarks", {})
+            hip = lm.get("LEFT_HIP")
+            knee = lm.get("LEFT_KNEE")
+            if hip and knee and hip.get("x") is not None and knee.get("x") is not None:
+                dx = (hip["x"] - knee["x"]) * sx
+                dy = (hip["y"] - knee["y"]) * sy
+                femur_lengths.append(np.sqrt(dx**2 + dy**2))
+        return float(np.median(femur_lengths)) if femur_lengths else None
+
+    def _median_foot_px() -> Optional[float]:
+        # Whole-recording median, same reason as _median_femur_px above.
+        foot_lengths = []
+        for f in frames:
+            lm = f.get("landmarks", {})
+            heel = lm.get("LEFT_HEEL") or lm.get("RIGHT_HEEL")
+            toe  = lm.get("LEFT_FOOT_INDEX") or lm.get("RIGHT_FOOT_INDEX")
+            if heel and toe and heel.get("x") is not None and toe.get("x") is not None:
+                dx = (heel["x"] - toe["x"]) * sx
+                dy = (heel["y"] - toe["y"]) * sy
+                foot_lengths.append(np.sqrt(dx**2 + dy**2))
+        return float(np.median(foot_lengths)) if foot_lengths else None
+
+    # Average every independent scale estimate available, rather than letting
+    # one reference override the others: a measured femur, a measured foot and
+    # a height-derived femur estimate each give a pixel-to-metre scale, and the
+    # mean of whatever was provided is the most robust. Falls back to 1.0
+    # (image-normalised) only when nothing could be measured.
+    femur_px = _median_femur_px()
+    scales = []
+    if femur_mm is not None and femur_px and femur_px > 0:
+        scales.append((femur_mm / 1000.0) / femur_px)
+    if foot_mm is not None:
+        foot_px = _median_foot_px()
+        if foot_px and foot_px > 0:
+            scales.append((foot_mm / 1000.0) / foot_px)
+    if height_m is not None and femur_px and femur_px > 0:
+        ratio = femur_ratio if femur_ratio is not None else FEMUR_HEIGHT_RATIO
+        scales.append((height_m * ratio) / femur_px)
+
+    if not scales:
+        return 1.0
+    return float(np.mean(scales))
+
+
+#: Stance-foot image drift (m over a single stance) above which the camera is
+#: taken to be moving (panning/tracking). A weight-bearing foot flat on the
+#: ground barely translates (heel-to-toe roll ~0.05 m); a tracking pan makes it
+#: appear to drift several times that.
+_PAN_DRIFT_M = 0.15
+
+
+def _stance_foot_drift_m(frames, events, idx_to_pos, img_w, scale) -> Optional[float]:
+    """Median absolute x-drift (m) of the planted stance foot over its stance.
+
+    A foot bearing body weight, flat on the ground, cannot translate; if its
+    image x moves, the camera moved. Measured per single-support phase (a
+    foot's heel strike to its own toe-off). Returns None when it cannot be
+    measured.
+    """
+    def _frame(e):
+        return e.get("frame") if isinstance(e, dict) else e
+
+    def _ax(fidx, name):
+        pos = idx_to_pos.get(fidx)
+        return None if pos is None else frames[pos].get("landmarks", {}).get(name, {}).get("x")
+
+    drifts = []
+    for side in ("left", "right"):
+        hs = sorted(_frame(e) for e in events.get(f"{side}_hs", []))
+        to = sorted(_frame(e) for e in events.get(f"{side}_to", []))
+        name = f"{side.upper()}_ANKLE"
+        for h in hs:
+            t = min((x for x in to if x > h), default=None)
+            if t is None or t - h < 4:
+                continue
+            xs = [_ax(fi, name) for fi in range(h, t + 1)]
+            xs = [x for x in xs if x is not None]
+            if len(xs) >= 4:
+                drifts.append(abs(xs[-1] - xs[0]) * img_w * scale)
+    return float(np.median(drifts)) if drifts else None
+
+
+def _c3d_step_lengths(data: dict, events: dict) -> Optional[dict]:
+    """Per-side step lengths (metres) from the real 3-D C3D markers.
+
+    A C3D pivot carries the true marker positions in ``c3d_markers_3d`` (mm),
+    so the metric step length is read directly -- the antero-posterior
+    inter-ankle separation at each heel strike -- with NO pixel-to-metre
+    scaling. The 2-D landmark projection the rest of the pipeline consumes
+    squashes the real-world capture volume anisotropically into the (square)
+    image box, so a femur/height pixel scale derived from the vertical femur
+    does NOT apply to the horizontal step and is off by the volume aspect
+    ratio (observed ~100x on Bath BioCV). Returns ``None`` for a non-C3D
+    pivot so the caller falls back to the pixel-scale path.
+    """
+    m3d = data.get("c3d_markers_3d")
+    if not isinstance(m3d, dict):
+        return None
+    la, ra = m3d.get("LEFT_ANKLE"), m3d.get("RIGHT_ANKLE")
+    if la is None or ra is None:
+        return None
+    la = np.asarray(la, dtype=float)
+    ra = np.asarray(ra, dtype=float)
+    if la.ndim != 2 or la.shape[1] < 2 or la.shape != ra.shape:
+        return None
+    # Forward (AP) axis = the axis the ankles travel along most; the vertical
+    # and medio-lateral spans are far smaller than the walkway length.
+    both = np.vstack([la, ra])
+    spans = np.nanmax(both, axis=0) - np.nanmin(both, axis=0)
+    if not np.any(np.isfinite(spans)):
+        return None
+    axis = int(np.nanargmax(spans))
+    # Millimetres -> metres (marker coords run to hundreds/thousands).
+    finite = both[np.isfinite(both)]
+    unit = 0.001 if (finite.size and float(np.median(np.abs(finite))) > 50.0) else 1.0
+    idx_to_pos = _frame_index_map(data.get("frames", []))
+    n = min(len(la), len(ra))
+    steps = {"left": [], "right": []}
+    for f_hs, side in _ordered_heel_strikes(events):
+        pos = idx_to_pos.get(f_hs)
+        if pos is None or pos >= n:
+            continue
+        lv, rv = la[pos, axis], ra[pos, axis]
+        if np.isfinite(lv) and np.isfinite(rv):
+            steps[side].append(abs(lv - rv) * unit)
+    if not steps["left"] and not steps["right"]:
+        return None
+    return steps
+
 
 def step_length(
     data: dict,
     cycles: dict,
     height_m: Optional[float] = None,
+    femur_mm: Optional[float] = None,
+    foot_mm: Optional[float] = None,
+    femur_ratio: Optional[float] = None,
 ) -> dict:
     """Estimate step and stride length from pose data.
 
-    Uses the horizontal distance between ankle positions at heel
-    strike. When subject height is provided, calibrates the
-    pixel-to-meter conversion using femur length as an
-    anthropometric reference (~24.5%% of body height).
+    Pixel-to-meter calibration uses the best anthropometric reference
+    available, in order of preference:
+
+    1. **Femur + foot** (both measurements provided): average the two
+       independent scale estimates for the tightest calibration —
+       recommended for research-grade metric outputs.
+    2. **Femur only** (``femur_mm``): use the measured femur length
+       directly (issue #40 quick-fix).
+    3. **Foot only** (``foot_mm``): use the measured foot length
+       (heel → toe distance).
+    4. **Height** (``height_m``): derive femur as ``femur_ratio`` ×
+       height (default :data:`FEMUR_HEIGHT_RATIO`)
+       (fallback anthropometric estimate).
+    5. None → output in image-normalised units.
 
     Parameters
     ----------
@@ -626,7 +975,14 @@ def step_length(
     cycles : dict
         Output of ``segment_cycles()``.
     height_m : float, optional
-        Subject height in meters for calibration.
+        Subject height in meters (fallback anthropometric reference).
+    femur_mm : float, optional
+        Subject femur length in millimetres.
+    foot_mm : float, optional
+        Subject foot length (heel → longest toe) in millimetres.
+    femur_ratio : float, optional
+        Femur/stature ratio for the ``height_m`` fallback (default
+        :data:`FEMUR_HEIGHT_RATIO`).
 
     Returns
     -------
@@ -637,6 +993,17 @@ def step_length(
     """
     frames = data.get("frames", [])
     events = data.get("events", {})
+
+    # Back-fill unset references from the pivot's subject block, so a direct
+    # step_length() call calibrates the same way walking_speed() does (analyze_gait
+    # already resolves these upstream; this keeps standalone calls consistent).
+    subject = data.get("subject") or {}
+    if height_m is None:
+        height_m = subject.get("height_m")
+    if femur_mm is None:
+        femur_mm = subject.get("femur_length_mm", subject.get("femur_mm"))
+    if foot_mm is None:
+        foot_mm = subject.get("foot_length_mm", subject.get("foot_mm"))
 
     if not frames or not events:
         return {"step_length_left": None, "step_length_right": None,
@@ -649,8 +1016,8 @@ def step_length(
             "step_length_right": None,
             "stride_length_left": None,
             "stride_length_right": None,
-            "unit": "m" if height_m else "normalized",
-            "calibrated": height_m is not None,
+            "unit": "m" if (height_m or femur_mm or foot_mm) else "normalized",
+            "calibrated": height_m is not None or femur_mm is not None or foot_mm is not None,
             "valid_for_progression": False,
             "limitation": (
                 "Treadmill-like trial detected: image-progression step/stride length "
@@ -658,81 +1025,111 @@ def step_length(
             ),
         }
 
-    # Estimate pixel-to-meter scale
-    # Use femur (hip-knee) length as reference: ~25% of body height
-    scale = 1.0  # pixels per meter (default)
-    if height_m is not None:
-        femur_lengths = []
-        for f in frames[:min(60, len(frames))]:
-            lm = f.get("landmarks", {})
-            hip = lm.get("LEFT_HIP")
-            knee = lm.get("LEFT_KNEE")
-            if hip and knee and hip.get("x") is not None and knee.get("x") is not None:
-                dx = hip["x"] - knee["x"]
-                dy = hip["y"] - knee["y"]
-                femur_lengths.append(np.sqrt(dx**2 + dy**2))
-        if femur_lengths:
-            median_femur_px = np.median(femur_lengths)
-            femur_m = height_m * 0.245  # femur ≈ 24.5% of height
-            if median_femur_px > 0:
-                scale = femur_m / median_femur_px
+    # C3D marker source: read the real metric step straight off the 3-D
+    # markers (no pixel scaling -- see _c3d_step_lengths). Falls through to the
+    # pixel-scale path for ordinary video pivots.
+    c3d_steps = _c3d_step_lengths(data, events)
+    if c3d_steps is not None:
+        mean_l = float(np.mean(c3d_steps["left"])) if c3d_steps["left"] else None
+        mean_r = float(np.mean(c3d_steps["right"])) if c3d_steps["right"] else None
+        c3d_stride = (round(mean_l + mean_r, 4)
+                      if (mean_l is not None and mean_r is not None) else None)
+        return {
+            "step_length_left": round(mean_l, 4) if mean_l is not None else None,
+            "step_length_right": round(mean_r, 4) if mean_r is not None else None,
+            "stride_length_left": c3d_stride,
+            "stride_length_right": c3d_stride,
+            "unit": "m",
+            "calibrated": True,
+            "valid_for_progression": True,
+            "source": "c3d_markers_3d",
+        }
 
-    # Compute step lengths (distance between consecutive HS of opposite feet)
-    all_hs = []
-    for ev in events.get("left_hs", []):
-        all_hs.append({"frame": ev["frame"], "side": "left"})
-    for ev in events.get("right_hs", []):
-        all_hs.append({"frame": ev["frame"], "side": "right"})
-    all_hs.sort(key=lambda e: e["frame"])
+    # Estimate pixel-to-meter scale.
+    # femur_mm + foot_mm both supplied → average two independent scale
+    # estimates (best precision).  femur_mm alone (issue #40) or foot_mm
+    # alone → use that reference directly.  Otherwise fall back to
+    # femur = 24.5 % of height.
+    meta = data.get("meta", {})
+    img_w = float(meta.get("width") or 1.0)
+    img_h = float(meta.get("height") or 1.0)
+    scale = _estimate_pixel_to_meter_scale(
+        frames, height_m=height_m, femur_mm=femur_mm, foot_mm=foot_mm,
+        femur_ratio=femur_ratio, width=img_w, height=img_h,
+    )
 
+    # Event/cycle frames are stored in original video ``frame_idx`` space
+    # (see ``events._remap_event_frames``), which does NOT equal the position
+    # in the ``frames`` list when the subject is not visible from frame 0.
+    # Build a frame_idx -> array-position map so ``frames`` is indexed
+    # correctly; positional indexing scrambles ankle pairs and silently drops
+    # any strike whose frame_idx exceeds len(frames), collapsing step length.
+    idx_to_pos = {f.get("frame_idx", i): i for i, f in enumerate(frames)}
+
+    def _ankle_x(frame_key, ankle_name):
+        pos = idx_to_pos.get(frame_key)
+        if pos is None:
+            return None
+        return frames[pos].get("landmarks", {}).get(ankle_name, {}).get("x")
+
+    # Step length = antero-posterior distance BETWEEN THE TWO FEET at the
+    # instant of heel strike (the foot that just struck, in front, vs the
+    # contralateral stance foot, behind) -- the clinical definition, and it
+    # stays below the stride. Measuring instead one ankle's displacement over
+    # the whole step interval captures the entire swing arc and overestimates
+    # by ~35 %; it can even exceed the stride, which is physically impossible.
     step_lengths = {"left": [], "right": []}
-    for i in range(len(all_hs) - 1):
-        if all_hs[i]["side"] == all_hs[i + 1]["side"]:
-            continue
-        f1 = all_hs[i]["frame"]
-        f2 = all_hs[i + 1]["frame"]
-        if f1 >= len(frames) or f2 >= len(frames):
-            continue
-
-        side = all_hs[i + 1]["side"]  # step is named by the leading foot
-        ankle_name = f"{side.upper()}_ANKLE"
-
-        lm1 = frames[f1].get("landmarks", {}).get(ankle_name, {})
-        lm2 = frames[f2].get("landmarks", {}).get(ankle_name, {})
-        x1 = lm1.get("x")
-        x2 = lm2.get("x")
-        if x1 is not None and x2 is not None:
-            dist = abs(x2 - x1) * scale
-            step_lengths[side].append(dist)
-
-    # Stride lengths from cycles
-    stride_lengths = {"left": [], "right": []}
-    for c in cycles.get("cycles", []):
-        f1 = c["start_frame"]
-        f2 = c["end_frame"]
-        if f1 >= len(frames) or f2 >= len(frames):
-            continue
-        ankle_name = f"{c['side'].upper()}_ANKLE"
-        lm1 = frames[f1].get("landmarks", {}).get(ankle_name, {})
-        lm2 = frames[f2].get("landmarks", {}).get(ankle_name, {})
-        x1 = lm1.get("x")
-        x2 = lm2.get("x")
-        if x1 is not None and x2 is not None:
-            dist = abs(x2 - x1) * scale
-            stride_lengths[c["side"]].append(dist)
+    for f_hs, side in _ordered_heel_strikes(events):
+        left_x = _ankle_x(f_hs, "LEFT_ANKLE")
+        right_x = _ankle_x(f_hs, "RIGHT_ANKLE")
+        if left_x is not None and right_x is not None:
+            step_lengths[side].append(abs((left_x - right_x) * img_w) * scale)
 
     def _mean_or_none(vals):
         return round(float(np.mean(vals)), 4) if vals else None
 
-    return {
+    # Camera-motion guard. A static overground camera keeps a planted stance
+    # foot still in the image; a tracking / panning camera (common with a
+    # hand-held or subject-following GoPro) makes the planted foot appear to
+    # drift, which is optically identical to a treadmill: it cancels most of
+    # the true forward translation in every cross-frame measurement (hip
+    # progression, single-ankle stride, image-based speed) while leaving the
+    # same-frame inter-ankle step untouched. Detect it from the stance-foot
+    # drift so those progression metrics can be flagged rather than reported
+    # as if the camera were fixed.
+    pan_m = _stance_foot_drift_m(frames, events, idx_to_pos, img_w, scale)
+    panning = pan_m is not None and pan_m > _PAN_DRIFT_M
+
+    # Stride = the two consecutive steps of a gait cycle (step_left + step_right),
+    # derived from the pan-immune inter-ankle STEP rather than a single ankle's
+    # cross-frame displacement (which a panning camera corrupts, producing the
+    # impossible stride < step).
+    mean_l = np.mean(step_lengths["left"]) if step_lengths["left"] else None
+    mean_r = np.mean(step_lengths["right"]) if step_lengths["right"] else None
+    stride = round(float(mean_l + mean_r), 4) if (mean_l is not None and mean_r is not None) else None
+
+    calibrated = height_m is not None or femur_mm is not None or foot_mm is not None
+    # Step and stride here are pan-immune: step is a same-frame inter-ankle
+    # measurement, and stride is derived from it (step_left + step_right), not
+    # from cross-frame single-ankle displacement. So they stay valid whether
+    # the camera is fixed OR tracking -- no need to invalidate on a pan.
+    result = {
         "step_length_left": _mean_or_none(step_lengths["left"]),
         "step_length_right": _mean_or_none(step_lengths["right"]),
-        "stride_length_left": _mean_or_none(stride_lengths["left"]),
-        "stride_length_right": _mean_or_none(stride_lengths["right"]),
-        "unit": "m" if height_m else "normalized",
-        "calibrated": height_m is not None,
+        "stride_length_left": stride,
+        "stride_length_right": stride,
+        "unit": "m" if calibrated else "normalized",
+        "calibrated": calibrated,
         "valid_for_progression": True,
     }
+    if panning:
+        result["camera_motion"] = "pan_detected"
+        result["note"] = (
+            f"Tracking/panning camera detected (planted stance foot drifts "
+            f"~{pan_m:.2f} m per stance). Step and stride are measured pan-immune "
+            "and stay valid; a raw image-progression distance would not."
+        )
+    return result
 
 
 # ── Walking speed ────────────────────────────────────────────────────
@@ -742,12 +1139,14 @@ def walking_speed(
     data: dict,
     cycles: dict,
     height_m: Optional[float] = None,
+    femur_mm: Optional[float] = None,
+    foot_mm: Optional[float] = None,
+    femur_ratio: Optional[float] = None,
 ) -> dict:
     """Estimate average walking speed.
 
-    Computes speed as stride_length / stride_time. When height
-    is provided, the result is in m/s; otherwise in normalized
-    units per second.
+    Computes speed as stride_length / stride_time.  See
+    :func:`step_length` for the anthropometric scale hierarchy.
 
     Parameters
     ----------
@@ -757,6 +1156,11 @@ def walking_speed(
         Output of ``segment_cycles()``.
     height_m : float, optional
         Subject height in meters.
+    femur_mm, foot_mm : float, optional
+        Measured segment lengths in millimetres (preferred references).
+    femur_ratio : float, optional
+        Femur/stature ratio for the ``height_m`` fallback (default
+        :data:`FEMUR_HEIGHT_RATIO`).
 
     Returns
     -------
@@ -765,7 +1169,18 @@ def walking_speed(
         ``unit``.
     """
     frames = data.get("frames", [])
-    height_m_val = height_m or data.get("subject", {}).get("height_m") if data.get("subject") else height_m
+    # Back-fill unset references from the pivot's subject block (analyze_gait
+    # resolves these upstream; this keeps standalone calls consistent with
+    # step_length()).
+    subject = data.get("subject") or {}
+    height_m_val = height_m if height_m is not None else subject.get("height_m")
+    if femur_mm is None:
+        femur_mm = subject.get("femur_length_mm", subject.get("femur_mm"))
+    if foot_mm is None:
+        foot_mm = subject.get("foot_length_mm", subject.get("foot_mm"))
+    # Metric whenever any anthropometric reference was given -- the scale below
+    # uses femur/foot as well as height (see step_length for the same fix).
+    calibrated = height_m_val is not None or femur_mm is not None or foot_mm is not None
 
     extraction = data.get("extraction", {})
     if isinstance(extraction, dict) and extraction.get("treadmill") is True:
@@ -773,7 +1188,7 @@ def walking_speed(
             "speed_mean": None,
             "speed_left": None,
             "speed_right": None,
-            "unit": "m/s" if height_m_val else "norm/s",
+            "unit": "m/s" if calibrated else "norm/s",
             "valid_for_progression": False,
             "limitation": (
                 "Treadmill-like trial detected: walking speed from image progression "
@@ -781,53 +1196,84 @@ def walking_speed(
             ),
         }
 
-    # Compute scale factor (same logic as step_length)
-    scale = 1.0
-    if height_m_val:
-        femur_lengths = []
-        for f in frames:
-            lm = f.get("landmarks", {})
-            hip = lm.get("LEFT_HIP")
-            knee = lm.get("LEFT_KNEE")
-            if hip and knee and hip.get("x") is not None and knee.get("x") is not None:
-                dx = hip["x"] - knee["x"]
-                dy = hip["y"] - knee["y"]
-                femur_lengths.append(np.sqrt(dx**2 + dy**2))
-        if femur_lengths:
-            median_femur_px = np.median(femur_lengths)
-            femur_m = height_m_val * 0.245
-            if median_femur_px > 0:
-                scale = femur_m / median_femur_px
-
     cycle_list = cycles.get("cycles", [])
+    events = data.get("events") or {}
 
-    speeds = {"left": [], "right": []}
-    for c in cycle_list:
-        side = c["side"]
-        f1 = c["start_frame"]
-        f2 = c["end_frame"]
-        if f1 >= len(frames) or f2 >= len(frames):
-            continue
-        ankle_name = f"{side.upper()}_ANKLE"
-        lm1 = frames[f1].get("landmarks", {}).get(ankle_name, {})
-        lm2 = frames[f2].get("landmarks", {}).get(ankle_name, {})
-        x1 = lm1.get("x")
-        x2 = lm2.get("x")
-        if x1 is not None and x2 is not None and c["duration"] > 0:
-            stride_l = abs(x2 - x1) * scale
-            speeds[side].append(stride_l / c["duration"])
+    # C3D marker source: real metric step (from the 3-D markers) x cadence.
+    # See step_length / _c3d_step_lengths -- the pixel-scale path is invalid on
+    # a C3D pivot because the 2-D projection loses the real-world scale.
+    c3d_steps = _c3d_step_lengths(data, events)
+    if c3d_steps is not None:
+        stride_times = [c["duration"] for c in cycle_list if c.get("duration", 0) > 0]
+        steps_per_s = (2.0 / float(np.mean(stride_times))) if stride_times else None
 
-    def _mean_or_none(vals):
-        return round(float(np.mean(vals)), 3) if vals else None
+        def _c3d_spd(vals):
+            if not vals or steps_per_s is None:
+                return None
+            return round(float(np.mean(vals)) * steps_per_s, 3)
 
-    all_speeds = speeds["left"] + speeds["right"]
-    return {
-        "speed_mean": _mean_or_none(all_speeds),
-        "speed_left": _mean_or_none(speeds["left"]),
-        "speed_right": _mean_or_none(speeds["right"]),
-        "unit": "m/s" if height_m_val else "norm/s",
+        return {
+            "speed_mean": _c3d_spd(c3d_steps["left"] + c3d_steps["right"]),
+            "speed_left": _c3d_spd(c3d_steps["left"]),
+            "speed_right": _c3d_spd(c3d_steps["right"]),
+            "unit": "m/s",
+            "valid_for_progression": True,
+            "source": "c3d_markers_3d",
+        }
+
+    # Compute scale factor via the shared helper (same rule as step_length).
+    meta = data.get("meta", {})
+    img_w = float(meta.get("width") or 1.0)
+    img_h = float(meta.get("height") or 1.0)
+    scale = _estimate_pixel_to_meter_scale(
+        frames, height_m=height_m_val, femur_mm=femur_mm, foot_mm=foot_mm,
+        femur_ratio=femur_ratio, width=img_w, height=img_h,
+    )
+
+    # Event/cycle frames are in original video frame_idx space; map to array
+    # position (same fix as step_length) so ``frames`` is indexed correctly.
+    idx_to_pos = {f.get("frame_idx", i): i for i, f in enumerate(frames)}
+
+    def _ankle_x(frame_key, ankle_name):
+        pos = idx_to_pos.get(frame_key)
+        return None if pos is None else frames[pos].get("landmarks", {}).get(ankle_name, {}).get("x")
+
+    # Speed = pan-immune STEP LENGTH x cadence (step frequency), the textbook
+    # identity, instead of a single ankle's cross-frame displacement over time
+    # -- which a tracking/panning camera corrupts (it cancels the forward
+    # translation, giving a speed several times too low). Both the inter-ankle
+    # step (same-frame) and the cadence (event timing) are pan-immune, so this
+    # is reliable whether the camera is fixed OR following the subject.
+    events = data.get("events") or {}
+    steps = {"left": [], "right": []}
+    for f_hs, side in _ordered_heel_strikes(events):
+        lx = _ankle_x(f_hs, "LEFT_ANKLE")
+        rx = _ankle_x(f_hs, "RIGHT_ANKLE")
+        if lx is not None and rx is not None:
+            steps[side].append(abs((lx - rx) * img_w) * scale)
+
+    stride_times = [c["duration"] for c in cycle_list if c.get("duration", 0) > 0]
+    # Two steps per stride, so step frequency = 2 / mean stride time.
+    steps_per_s = (2.0 / float(np.mean(stride_times))) if stride_times else None
+
+    def _spd(vals):
+        if not vals or steps_per_s is None:
+            return None
+        return round(float(np.mean(vals)) * steps_per_s, 3)
+
+    out = {
+        "speed_mean": _spd(steps["left"] + steps["right"]),
+        "speed_left": _spd(steps["left"]),
+        "speed_right": _spd(steps["right"]),
+        "unit": "m/s" if calibrated else "norm/s",
         "valid_for_progression": True,
     }
+    pan_m = _stance_foot_drift_m(frames, events, idx_to_pos, img_w, scale)
+    if pan_m is not None and pan_m > _PAN_DRIFT_M:
+        # Speed above is already pan-immune (step x cadence); note the pan for
+        # transparency rather than invalidating a now-correct number.
+        out["camera_motion"] = "pan_detected"
+    return out
 
 
 # ── Advanced pathology detection ─────────────────────────────────────
@@ -989,7 +1435,7 @@ def single_support_time(data: dict, cycles: dict) -> dict:
     Function. 2nd ed. SLACK; 2010:9-16.
     """
     events = data.get("events", {})
-    fps = data.get("meta", {}).get("fps", 30.0)
+    fps = _frame_rate(data)
     cycle_list = cycles.get("cycles", [])
 
     # Collect toe-off events per side
@@ -1080,35 +1526,61 @@ def toe_clearance(data: dict, cycles: dict) -> dict:
         return {"mtc_left": None, "mtc_right": None,
                 "mtc_left_cv": None, "mtc_right_cv": None, "unit": "normalized"}
 
-    # Find ground level from heel positions during stance
-    heel_y_all = []
-    for f in frames:
-        for heel_name in ("LEFT_HEEL", "RIGHT_HEEL"):
-            lm = f.get("landmarks", {}).get(heel_name)
-            if lm and lm.get("y") is not None and not np.isnan(lm["y"]):
-                heel_y_all.append(lm["y"])
-    ground_y = np.percentile(heel_y_all, 95) if heel_y_all else 0.82
+    # Ground level PER SIDE from that foot's OWN vertical floor -- the 95th
+    # percentile of the toe (FOOT_INDEX) y over the recording, i.e. the surface
+    # the toe rests/pushes off from. Referencing the toe against the *heel*'s
+    # ground (as before) mixed two markers with different foot-flat heights, so
+    # the clearance could come out negative even for a normal swing.
+    def _floor(name):
+        ys = [f["landmarks"][name]["y"] for f in frames
+              if isinstance(f.get("landmarks", {}).get(name), dict)
+              and f["landmarks"][name].get("y") is not None
+              and not np.isnan(f["landmarks"][name]["y"])]
+        return float(np.percentile(ys, 95)) if ys else 0.82
 
+    foot_floor = {side: _floor(f"{side.upper()}_FOOT_INDEX") for side in ("left", "right")}
+
+    # Cycle frames are original-video indices; resolve them to positions in the
+    # analysed window (which may start late / be shorter). The toe-off frame is
+    # stored under ``toe_off_frame`` -- reading the non-existent ``to_frame`` key
+    # made ``to_frame`` always ``None``, so the swing loop never ran and every
+    # MTC came back ``None``.
+    idx_to_pos = _frame_index_map(frames)
     mtc = {"left": [], "right": []}
     for c in cycle_list:
         side = c["side"]
-        to_frame = c.get("to_frame")
+        to_frame = c.get("toe_off_frame")
         end_frame = c["end_frame"]
         if to_frame is None:
             continue
 
-        # Swing phase: TO to end of cycle
-        foot_name = f"{side.upper()}_FOOT_INDEX"
-        min_clearance = float("inf")
-        for fi in range(to_frame, min(end_frame, len(frames))):
-            lm = frames[fi].get("landmarks", {}).get(foot_name)
-            if lm and lm.get("y") is not None and not np.isnan(lm["y"]):
-                clearance = ground_y - lm["y"]
-                if clearance < min_clearance:
-                    min_clearance = clearance
+        to_pos = idx_to_pos.get(to_frame)
+        end_pos = idx_to_pos.get(end_frame)
+        if to_pos is None:
+            continue
+        if end_pos is None:
+            end_pos = len(frames)
 
-        if min_clearance < float("inf"):
-            mtc[side].append(min_clearance)
+        # Minimum TOE clearance is a MID-SWING event. Over a swing the toe
+        # clearance starts near zero at toe-off (foot leaving the ground), rises
+        # to an early-swing peak, dips to the MTC around mid-swing, then descends
+        # again to heel strike. Searching the whole swing returned the toe-off /
+        # terminal-swing ground contact (≈0 or negative) instead of the real
+        # MTC, so restrict the search to the mid-portion of swing.
+        foot_name = f"{side.upper()}_FOOT_INDEX"
+        ground = foot_floor[side]
+        positions = list(range(to_pos, min(end_pos, len(frames))))
+        if len(positions) >= 6:
+            lo = int(round(0.25 * len(positions)))
+            hi = max(lo + 1, int(round(0.85 * len(positions))))
+            positions = positions[lo:hi]
+        clearances = [ground - frames[fi]["landmarks"][foot_name]["y"]
+                      for fi in positions
+                      if isinstance(frames[fi].get("landmarks", {}).get(foot_name), dict)
+                      and frames[fi]["landmarks"][foot_name].get("y") is not None
+                      and not np.isnan(frames[fi]["landmarks"][foot_name]["y"])]
+        if clearances:
+            mtc[side].append(min(clearances))
 
     result = {}
     for side in ("left", "right"):
@@ -1155,7 +1627,7 @@ def stride_variability(data: dict, cycles: dict) -> dict:
     2001;82(8):1050-1056. doi:10.1053/apmr.2001.24893
     """
     events = data.get("events", {})
-    fps = data.get("meta", {}).get("fps", 30.0)
+    fps = _frame_rate(data)
     cycle_list = cycles.get("cycles", [])
 
     # Stride time CV
@@ -1177,22 +1649,28 @@ def stride_variability(data: dict, cycles: dict) -> dict:
             step_times.append(dt)
     step_time_cv = round(_cv(step_times), 1)
 
-    # Step length CV (use ankle x displacement at HS)
+    # Step length CV. Measure the step as the antero-posterior separation
+    # between the two ankles *within the heel-strike frame* -- a same-frame
+    # quantity that is immune to a panning/tracking camera (which corrupts any
+    # cross-frame single-ankle displacement, exactly as it did in the shipped
+    # step_length fix). Frame indices are resolved through the index map so the
+    # analysed window's late start / short length can't misread or drop frames.
     frames = data.get("frames", [])
+    idx_to_pos = _frame_index_map(frames)
+
+    def _ankle_x(frame_key, ankle_name):
+        pos = idx_to_pos.get(frame_key)
+        if pos is None:
+            return None
+        lm = frames[pos].get("landmarks", {}).get(ankle_name, {})
+        return lm.get("x")
+
     step_lengths = {"left": [], "right": []}
-    for i in range(len(all_hs) - 1):
-        if all_hs[i]["side"] == all_hs[i + 1]["side"]:
-            continue
-        f1, f2 = all_hs[i]["frame"], all_hs[i + 1]["frame"]
-        if f1 >= len(frames) or f2 >= len(frames):
-            continue
-        side = all_hs[i + 1]["side"]
-        ankle = f"{side.upper()}_ANKLE"
-        lm1 = frames[f1].get("landmarks", {}).get(ankle, {})
-        lm2 = frames[f2].get("landmarks", {}).get(ankle, {})
-        x1, x2 = lm1.get("x"), lm2.get("x")
-        if x1 is not None and x2 is not None:
-            step_lengths[side].append(abs(x2 - x1))
+    for f_hs, side in _ordered_heel_strikes(events):
+        left_x = _ankle_x(f_hs, "LEFT_ANKLE")
+        right_x = _ankle_x(f_hs, "RIGHT_ANKLE")
+        if left_x is not None and right_x is not None:
+            step_lengths[side].append(abs(left_x - right_x))
 
     # ROM CV per joint per side
     rom_cv = {}
@@ -1544,13 +2022,27 @@ def detect_parkinsonian(data: dict, cycles: dict) -> dict:
     features = []
     details = {}
 
-    # 1. Short stride: reduced ankle x excursion
+    # 1. Short stride: reduced ankle fore-aft excursion RELATIVE TO THE PELVIS.
+    # The absolute ankle-x peak-to-peak is not stride amplitude -- with a fixed
+    # camera it is the whole-clip travel across the frame (metres), and with a
+    # tracking/panning camera it collapses toward zero because the camera cancels
+    # the forward translation, which would falsely flag a healthy subject as
+    # having a short (parkinsonian) stride. Measuring the ankle minus the mid-hip
+    # gives the true limb swing amplitude and is immune to camera motion.
     frames = data.get("frames", [])
-    ankle_x = [f.get("landmarks", {}).get("LEFT_ANKLE", {}).get("x")
-               for f in frames]
-    ankle_x_clean = [v for v in ankle_x if v is not None and not np.isnan(v)]
-    if ankle_x_clean:
-        ankle_excursion = float(np.ptp(ankle_x_clean))
+    ankle_rel = []
+    for f in frames:
+        lm = f.get("landmarks", {})
+        ax = lm.get("LEFT_ANKLE", {}).get("x")
+        lhx = lm.get("LEFT_HIP", {}).get("x")
+        rhx = lm.get("RIGHT_HIP", {}).get("x")
+        if ax is None or lhx is None or rhx is None:
+            continue
+        if np.isnan(ax) or np.isnan(lhx) or np.isnan(rhx):
+            continue
+        ankle_rel.append(ax - (lhx + rhx) / 2.0)
+    if ankle_rel:
+        ankle_excursion = float(np.ptp(ankle_rel))
         details["ankle_excursion"] = round(ankle_excursion, 4)
         if ankle_excursion < 0.08:
             features.append("short_stride")
@@ -1705,7 +2197,7 @@ def instantaneous_cadence(data: dict) -> dict:
         ``cv``, ``trend_slope`` (linear regression slope).
     """
     events = data.get("events", {})
-    fps = data.get("meta", {}).get("fps", 30.0)
+    fps = _frame_rate(data)
 
     all_hs = []
     for ev in events.get("left_hs", []):
@@ -1925,7 +2417,7 @@ def estimate_center_of_mass(data: dict, model: str = "winter") -> dict:
     vertical_excursion = float(np.ptp(valid_y)) if valid_y else 0.0
 
     # Smoothness: inverse of normalized jerk
-    fps = data.get("meta", {}).get("fps", 30.0)
+    fps = _frame_rate(data)
     smoothness = 0.0
     if len(valid_y) > 3:
         y_arr = np.array(com_y_list)
@@ -1979,7 +2471,7 @@ def postural_sway(
         ``sway_velocity``, ``ml_range``, ``ap_range``.
     """
     frames = data.get("frames", [])
-    fps = data.get("meta", {}).get("fps", 30.0)
+    fps = _frame_rate(data)
 
     if start_frame is None:
         start_frame = 0
@@ -1993,15 +2485,32 @@ def postural_sway(
         lm = f.get("landmarks", {})
         la = lm.get("LEFT_ANKLE", {})
         ra = lm.get("RIGHT_ANKLE", {})
+        lhip = lm.get("LEFT_HIP", {})
+        rhip = lm.get("RIGHT_HIP", {})
         lx, ly = la.get("x"), la.get("y")
         rx, ry = ra.get("x"), ra.get("y")
+        lhx, lhy = lhip.get("x"), lhip.get("y")
+        rhx, rhy = rhip.get("x"), rhip.get("y")
 
         if (lx is not None and ly is not None
                 and rx is not None and ry is not None
+                and lhx is not None and lhy is not None
+                and rhx is not None and rhy is not None
                 and not np.isnan(lx) and not np.isnan(ly)
-                and not np.isnan(rx) and not np.isnan(ry)):
-            cop_x.append(float((lx + rx) / 2.0))
-            cop_y.append(float((ly + ry) / 2.0))
+                and not np.isnan(rx) and not np.isnan(ry)
+                and not np.isnan(lhx) and not np.isnan(lhy)
+                and not np.isnan(rhx) and not np.isnan(rhy)):
+            # Reference the COP to the pelvis midpoint. Peak-to-peak and
+            # covariance are already invariant to a *constant* camera offset,
+            # but a tracking/panning camera (or, on a fixed camera, the whole
+            # forward progression of an overground walk) adds spurious range
+            # that has nothing to do with postural sway. Subtracting the pelvis
+            # isolates the ankle's deviation relative to the body -- genuine
+            # sway, immune to camera motion and to walking translation.
+            pel_x = (lhx + rhx) / 2.0
+            pel_y = (lhy + rhy) / 2.0
+            cop_x.append(float((lx + rx) / 2.0 - pel_x))
+            cop_y.append(float((ly + ry) / 2.0 - pel_y))
         else:
             cop_x.append(float("nan"))
             cop_y.append(float("nan"))
@@ -2219,7 +2728,7 @@ def compute_derivatives(
         )
     angle_frames = angles["frames"]
 
-    fps = data.get("meta", {}).get("fps", 30.0)
+    fps = _frame_rate(data)
     dt = 1.0 / fps
 
     if joints is None:
@@ -2309,7 +2818,7 @@ def time_frequency_analysis(
         joints = ["hip_L", "knee_L", "ankle_L"]
 
     angle_frames = data.get("angles", {}).get("frames", [])
-    fps = data.get("meta", {}).get("fps", 30.0)
+    fps = _frame_rate(data)
     n_frames = len(angle_frames)
 
     results = {}

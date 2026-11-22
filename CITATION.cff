@@ -1,0 +1,26 @@
+cff-version: 1.2.0
+message: "If you use myogait in your research, please cite it as below."
+title: "myogait: a markerless video-based gait analysis toolkit"
+type: software
+authors:
+  - family-names: Fer
+    given-names: Frédéric
+    orcid: "https://orcid.org/0009-0002-2529-2479"
+    affiliation: "Institut de Myologie, Myodata team, Paris, France"
+    email: f.fer@institut-myologie.org
+  - family-names: Feigean
+    given-names: Romain
+    orcid: "https://orcid.org/0009-0009-1641-1182"
+    affiliation: "Institut de Myologie, Neuromuscular Physiology and Evaluation Laboratory, Paris, France"
+version: 0.10.1
+date-released: 2026-11-09
+doi: 10.5281/zenodo.18726412
+license: MIT
+repository-code: "https://github.com/IDMDataHub/myogait"
+url: "https://pypi.org/project/myogait/"
+keywords:
+  - gait analysis
+  - markerless motion capture
+  - pose estimation
+  - biomechanics
+  - neuromuscular disease

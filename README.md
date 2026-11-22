@@ -4,36 +4,117 @@ Markerless video-based gait analysis toolkit.
 
 [![CI](https://github.com/IDMDataHub/myogait/actions/workflows/ci.yml/badge.svg)](https://github.com/IDMDataHub/myogait/actions/workflows/ci.yml)
 [![PyPI](https://img.shields.io/pypi/v/myogait)](https://pypi.org/project/myogait/)
-[![Python 3.9+](https://img.shields.io/pypi/pyversions/myogait)](https://pypi.org/project/myogait/)
+[![Python versions](https://img.shields.io/pypi/pyversions/myogait)](https://pypi.org/project/myogait/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](https://opensource.org/licenses/MIT)
 [![Tests](https://img.shields.io/github/actions/workflow/status/IDMDataHub/myogait/ci.yml?label=tests)](https://github.com/IDMDataHub/myogait/actions/workflows/ci.yml)
 [![Downloads](https://img.shields.io/pypi/dm/myogait)](https://pypi.org/project/myogait/)
 
 **Author:** Frederic Fer, Institut de Myologie ([f.fer@institut-myologie.org](mailto:f.fer@institut-myologie.org))
 
+myogait turns an ordinary video of a person walking into a quantitative gait
+analysis — sagittal hip, knee and ankle angles, gait events, normalised gait
+cycles, spatio-temporal and clinical parameters, normative comparison and a PDF
+report — from a single camera, including a hand-held phone that follows the
+subject. Marker-based recordings (C3D) go through the same algorithms, so
+video can be benchmarked against a laboratory reference. It is a research
+tool, not a certified medical device.
+
+**No-code interface:** [myogait-app](https://github.com/IDMDataHub/myogait_app)
+([PyPI](https://pypi.org/project/myogait-app/)) is a Streamlit application for
+clinicians built on this library: trial explorer, patient follow-up, group
+comparison and markerless-vs-marker comparison, without writing code.
+
 ---
+
+## Quick Start
+
+The validated end-to-end pipeline in one call — works on a video, a
+pre-extracted `.myogait.json`, or a `.c3d` optical-capture file:
+
+On a laptop without GPU, start with the lightweight MediaPipe backend
+(`pip install "myogait[mediapipe]"`); Sapiens 2, the most accurate backend,
+needs a recent PyTorch and ideally a GPU (see the Sapiens 2 section).
+
+```python
+import myogait as mg
+
+result = mg.run_pipeline("walk.mp4", model="mediapipe")       # CPU
+# result = mg.run_pipeline("walk.mp4", model="sapiens2-quick")  # GPU, most accurate
+
+result["stats"]                  # cadence, stance %, ROM, symmetry, ...
+result["cycles"]                 # normalized gait cycles (0-100%)
+result["quality"]["warnings"]    # anything that should temper interpretation
+```
+
+`run_pipeline` applies the benchmarked defaults (Butterworth 4 Hz,
+flexion-positive sign convention independent of walking direction, Zeni
+events, physiological cycle window, direction-consistent cycle filter)
+and reports quality diagnostics — tracking coverage, out-of-plane
+distortion, insufficient cycle counts — instead of failing silently.
+Every step remains available individually; see the
+[tutorial](docs/tutorial.md).
+
+Not sure which recipe fits your recording? `run_auto` inspects it (standing
+start or not, there-and-back walkway, marker source) and picks the processing
+recipe, falling back to the overground recipe if no gait cycle is found:
+
+```python
+result = mg.run_auto("walk.mp4", model="sapiens2-quick")
+result["recipe"]["name"], result["reasons"]   # e.g. "overground", [...]
+```
+
+## Validation
+
+myogait was compared with simultaneous marker-based motion capture on the
+BioCV dataset of the University of Bath (healthy adults, fixed cameras,
+Qualisys, Sapiens2 backend, left lateral camera). The marker angles are
+computed directly from the markers (hip relative to the pelvis), independently
+of myogait.
+
+![Joint angles over the gait cycle, myogait vs marker-based capture](validation/results/figures/validation_curves.png)
+
+| Lateral camera, myogait 0.9.3 defaults | Agreement with marker-based capture |
+|---|---|
+| Waveform *r*, hip / knee / ankle | 0.99 / 1.00 / 0.98 |
+| Shape RMSE (offset removed), hip / knee / ankle | 2.9° / 2.9° / 1.8° |
+| Absolute RMSE, hip / knee / ankle | 8.7° / 5.5° / 3.6° |
+| Range-of-motion error, hip / knee / ankle | −3.5° / −7.7° / +0.8° |
+| Cadence ICC(2,1) | 0.93 |
+| Stride-length ICC(2,1) (bias) | 0.71 (−0.04 m) |
+| Walking-speed ICC(2,1) | 0.83 |
+| Initial contact / toe-off timing | −6 ± 26 / −3 ± 29 ms |
+
+Waveform shape, peaks (including the ankle push-off and the knee swing peak),
+timing and cadence are the validated outputs. The hip angle is measured
+between thigh and trunk, whereas marker models measure it against the pelvis:
+it carries a subject-specific offset (about −6° on average) that video cannot
+remove, because pelvic tilt is not visible to pose models. Frontal or rear
+views do not give usable sagittal angles, and the camera on the far side of
+the subject gives lower agreement. A clinical validation in patients is
+ongoing. Full results, limits, code and aggregate tables:
+[`validation/`](validation/README.md).
 
 ## Features
 
-- **Multi-model pose extraction** — MediaPipe, YOLO, Sapiens (3 sizes), Sapiens 2 (4 sizes), ViTPose, RTMW, HRNet, RTMPose, OpenPose, AlphaPose, Detectron2
-- **Sapiens / Sapiens 2 depth estimation** — monocular relative depth per landmark
-- **Sapiens / Sapiens 2 body segmentation** — 28/29-class body-part labels per landmark
-- **Frame coherence scoring** — per-frame biomechanical quality metric (z-score based)
-- Butterworth, Savitzky-Golay, and Kalman filtering
-- Joint angle computation (sagittal vertical axis, sagittal classic)
-- 4 event detection methods (Zeni, crossing, velocity, O'Connor)
-- Gait cycle segmentation and normalization
-- Spatio-temporal analysis (cadence, stride time, stance%)
-- Symmetry and variability indices
-- Step length and walking speed estimation
-- Harmonic ratio and regularity index
-- Advanced pathology detection (Trendelenburg, spastic, steppage, crouch)
-- Biomechanical validation against physiological ranges
-- Publication-quality matplotlib plots
-- Multi-page PDF clinical report
-- Export to CSV, OpenSim (.mot/.trc), Excel
-- YAML/JSON pipeline configuration
-- CLI with `extract`, `run`, `analyze`, `batch`, `download`, and `info` commands
+**Pose estimation**
+- 11 interchangeable backends — MediaPipe, YOLO, Sapiens (3 sizes), Sapiens 2 (4 sizes), ViTPose, RTMW, HRNet, RTMPose, OpenPose, AlphaPose, Detectron2 — behind one API; `available_models()` reports what is installed without importing anything heavy
+- Monocular depth and 28/29-class body-part segmentation (Sapiens / Sapiens 2)
+
+**Gait analysis**
+- Sagittal joint angles with a walking-direction-independent, flexion-positive convention
+- Gait events (Zeni, crossing, velocity, O'Connor + gaitkit detectors), cycle segmentation with duration **and quality** gates (landmark confidence / frame coherence)
+- Spatio-temporal parameters (cadence, stride time, stance %), symmetry and variability indices, harmonic ratio, step length and walking speed with configurable anthropometric scaling (`femur_mm`, `foot_mm`, `femur_ratio`)
+- Pathology screening (Trendelenburg, spastic, steppage, crouch) and biomechanical range validation
+
+**Quality & reference data**
+- Per-frame biomechanical coherence scoring; built-in quality diagnostics in `run_pipeline`
+- Empirical adult normative curves (optical motion capture) with per-phase SD
+- C3D reference support: marker-convention autodetection, isotropic loading, 3-D ankle reference, CMC / RMSE / Bland-Altman benchmark metrics
+
+**Output**
+- Publication-quality plots, multi-page PDF clinical report
+- Export to CSV, Excel, OpenSim (`.mot`/`.trc`), C3D
+- CLI (`extract`, `run`, `analyze`, `batch`, `download`, `info`) and YAML/JSON pipeline configuration
 
 ## Installation
 
@@ -217,10 +298,10 @@ The skeleton-on-video alignment honours `data["frames"][i]["frame_idx"]`,
 so the auto-cropped intro of long recordings is rendered correctly across
 all models.
 
-### Experimental AIM Benchmark Input Degradation
+### Experimental Input Degradation (robustness studies)
 
 `myogait` includes an **experimental** pre-extraction degradation layer for
-robustness benchmarking in the **AIM benchmark context only**.
+controlled robustness studies (frame-rate, resolution, contrast, perspective).
 By default, it is disabled and applies **no modification**.
 
 Python API:
@@ -258,7 +339,7 @@ myogait extract video.mp4 \
 
 ### Experimental VICON Alignment (Single Video)
 
-For AIM benchmark workflows, you can align one myogait result with one VICON
+For validation workflows, you can align one myogait result with one VICON
 trial and attach ground-truth comparison metrics to the JSON.
 This is experimental and disabled by default in the standard pipeline.
 
@@ -275,7 +356,7 @@ data = run_single_trial_vicon_benchmark(
 # Results in data["experimental"]["vicon_benchmark"]
 ```
 
-### Experimental Single-Pair Benchmark Runner (AIM Only)
+### Experimental Single-Pair Benchmark Runner
 
 You can run a full benchmark grid on one `(video, vicon_trial)` pair and
 generate:
@@ -308,7 +389,7 @@ manifest = run_single_pair_benchmark(
 print(manifest["summary_csv"])
 ```
 
-This runner is experimental and intended only for AIM benchmark workflows.
+This runner is experimental and intended for validation studies against an optical reference.
 
 ### References
 
@@ -474,19 +555,42 @@ print(f"Quality score: {quality['score']}/100")
 
 # Per-frame coherence scoring (z-score based, adapts to any FPS)
 data = frame_coherence_score(data)
-print(f"Mean coherence: {data['coherence_summary']['mean']:.3f}")
+print(f"Mean coherence: {data['coherence_summary']['mean_score']:.3f}")
 print(f"Low frames: {data['coherence_summary']['low_coherence_frames']}")
 ```
 
+### Sagittal drift correction (opt-in)
+
+Long recordings with a fixed camera show a slow angular drift (projection
+artifact as the subject's distance to the camera changes): hip angles can
+slide by 10–30° from the first to the last cycle. `apply_linear_detrend()`
+(myogait.corrections) fits and removes that linear drift per joint while
+preserving the anatomical mean and per-cycle ROM.
+
+```python
+from myogait.corrections import apply_linear_detrend
+data = apply_linear_detrend(data)   # after compute_angles()
+```
+
+or via the CLI: `myogait analyze video.json --detrend`.
+
+**Caveat:** the correction family in this module was calibrated on healthy
+adults; on pathological gait a real kinematic drift can be part of the
+clinical picture. Keep the flag off by default and compare with/without
+before drawing clinical conclusions (see the warnings at the top of
+`myogait/corrections.py`).
+
 ### Normative Comparison
 
-Compare patient kinematics against published normative reference bands
-(Perry & Burnfield).
+Compare patient kinematics against normative reference bands. Adult hip,
+knee, ankle and sagittal pelvis curves were computed from the BioCV dataset of
+healthy adults (Evans et al. 2024, doi:10.15125/BATH-01258); trunk and
+frontal-plane curves come from Perry & Burnfield (2010) and Winter (2009).
 
 ```python
 from myogait import plot_normative_comparison, get_normative_band
 
-# Plot patient vs normative bands (Perry & Burnfield)
+# Plot patient vs normative bands
 fig = plot_normative_comparison(data, cycles, plane="both")
 fig.savefig("normative_comparison.png", dpi=150)
 
@@ -514,6 +618,77 @@ data = detect_events(data, method="gk_bike")
 # Consensus: vote across multiple detectors
 data = event_consensus(data, methods=["gk_bike", "gk_zeni", "gk_oconnor"])
 ```
+
+The neural detectors `gk_intellevent` and `gk_deepevent` additionally
+require **onnxruntime** (or `onnxruntime-directml` on Windows without
+CUDA).  Install with `pip install onnxruntime` — the other detectors
+work without it and out of the box.
+
+### Metric calibration — measured anthropometrics preferred over height
+
+`analyze_gait()`, `step_length()` and `walking_speed()` accept
+`femur_mm` (femur length) and `foot_mm` (foot length, heel → longest
+toe) in addition to `height_m`.  The scale hierarchy is:
+
+1. **Femur + foot** together: the two independent scale estimates are
+   averaged for the tightest calibration (recommended for research).
+2. **Femur alone** (`femur_mm`): use the measured femur directly.
+3. **Foot alone** (`foot_mm`): use the measured foot directly.
+4. **Height** (`height_m`): fallback, derives femur as 24.5 % of
+   height.
+5. Nothing → output in image-normalised units.
+
+```python
+# Best: both measurements
+stats = mg.analyze_gait(data, cycles, femur_mm=442, foot_mm=265)
+
+# Quick-fix: femur only
+stats = mg.analyze_gait(data, cycles, femur_mm=442)
+
+# Fallback: height
+stats = mg.analyze_gait(data, cycles, height_m=1.68)
+```
+
+### Per-cycle biomarker export (Excel)
+
+`export_excel()` emits a `Biomarkers_per_cycle` sheet with one row per
+detected cycle: ROM, min / max / mean per joint, peak angular velocity
+(deg/s), peak angular acceleration (deg/s²), phase-restricted peaks
+(stance vs swing separately), plus the SCI-relevant clinical markers
+(foot drop = ankle at HS, stiff-knee = peak knee flex in swing,
+toe-clearance = min ankle in swing) and the swing-peak knee timing.
+Makes per-cycle variability directly visible without post-processing.
+
+```python
+mg.export_excel(data, "report.xlsx", cycles=cycles, stats=stats)
+```
+
+### C3D loading with automatic marker-convention detection
+
+C3D input and output need the optional `c3d` extra
+(`pip install "myogait[c3d]"`). `load_c3d()` reads any C3D file and returns a myogait-compatible pivot
+dict.  When `marker_mapping` is omitted the function autodetects the
+convention among the registered families (Plug-in Gait, ISB, Helen
+Hayes, ...) by scoring how many lower-limb markers each convention can
+resolve, and falls back to a regex-based fuzzy match on the raw labels
+if no registered convention scores high enough.
+
+```python
+data = mg.load_c3d("trial.c3d")          # autodetect
+data["extraction"]["c3d_convention"]     # → 'plug_in_gait' | 'iso_biomechanics' | ...
+data["extraction"]["c3d_convention_scores"]   # per-convention resolution count
+
+# List / inspect / extend
+list(mg.C3D_MARKER_CONVENTIONS.keys())
+mg.C3D_MARKER_CONVENTIONS["plug_in_gait"]["LEFT_HIP"]   # ['LASI', 'LPSI', 'LHJC']
+
+# Autodetect just the convention (without loading the trajectories)
+name, mapping, scores = mg.detect_c3d_convention(labels)
+```
+
+New conventions can be registered by editing
+`myogait.experimental_vicon.C3D_MARKER_CONVENTIONS` (flat dict, keyed
+by myogait landmark name).
 
 ### Export to OpenSim / Pose2Sim
 
@@ -560,7 +735,7 @@ fig = plot_summary(data, cycles, stats)
 fig.savefig("dashboard.png", dpi=150)
 
 # MAP barplot (Movement Analysis Profile)
-fig = plot_gvs_profile(gvs)
+fig = plot_gvs_profile(cycles)
 fig.savefig("gvs_profile.png", dpi=150)
 ```
 
@@ -664,6 +839,10 @@ All functions operate on a single `data` dict that flows through the pipeline.
 
 | Function | Description |
 |---|---|
+| **One-call pipelines** | |
+| `run_pipeline(source, model)` | Validated end-to-end pipeline on a video, `.myogait.json` or `.c3d` |
+| `run_auto(source, model)` | Same, with the recipe chosen from the recording (`detect_recipe`) |
+| `filter_cycles_by_direction(data, cycles)` | Keep the dominant walking direction (there-and-back walkways) |
 | **Core pipeline** | |
 | `extract(video, model, experimental=None)` | Extract pose landmarks from video |
 | `normalize(data, filters)` | Filter and normalize landmark trajectories |
@@ -696,7 +875,7 @@ All functions operate on a single `data` dict that flows through the pipeline.
 | **Visualization** | |
 | `plot_summary(data, cycles, stats)` | Summary dashboard |
 | `plot_normative_comparison(data, cycles)` | Patient vs normative bands |
-| `plot_gvs_profile(gvs)` | Movement Analysis Profile barplot |
+| `plot_gvs_profile(cycles)` | Movement Analysis Profile barplot |
 | `render_skeleton_video(video, data, out)` | Skeleton overlay on video |
 | `render_stickfigure_animation(data, out)` | Anonymized stick figure GIF |
 | **Export** | |
@@ -768,12 +947,14 @@ When using Sapiens (v1 or v2) with depth and segmentation:
 
 myogait is developed at the [Institut de Myologie](https://www.institut-myologie.org/) (Paris, France) by the **PhysioEvalLab / IDMDataHub** team.
 
-This work is supported by:
+This work is funded by **Crédit Agricole CIB-LCL** and supported by:
 - [AFM-Téléthon](https://www.afm-telethon.fr/) — French Muscular Dystrophy Association
 - [Fondation Myologie](https://www.fondation-myologie.org/) — Research foundation for muscle diseases
 - [Téléthon](https://www.telethon.fr/) — Annual fundraising event for rare disease research
 
 <p align="center">
+  <img src="https://img.shields.io/badge/Cr%C3%A9dit_Agricole_CIB--LCL-Funding-006A4E?style=for-the-badge" alt="Crédit Agricole CIB-LCL">
+  &nbsp;
   <a href="https://www.institut-myologie.org/">
     <img src="https://img.shields.io/badge/Institut_de_Myologie-Paris-0055A4?style=for-the-badge" alt="Institut de Myologie">
   </a>
@@ -793,20 +974,31 @@ This work is supported by:
 
 ## Citation
 
-If you use myogait in your research, please cite:
+If you use myogait in your research, please cite it (see also
+[`CITATION.cff`](CITATION.cff)):
 
 ```bibtex
 @software{myogait,
-  author = {Fer, Frederic},
-  title = {myogait: Markerless video-based gait analysis toolkit},
-  year = {2025},
-  institution = {Institut de Myologie, Paris, France},
-  publisher = {GitHub},
-  url = {https://github.com/IDMDataHub/myogait}
+  author    = {Fer, Frédéric},
+  title     = {myogait: a markerless video-based gait analysis toolkit},
+  year      = {2026},
+  publisher = {Zenodo},
+  doi       = {10.5281/zenodo.18726412},
+  url       = {https://github.com/IDMDataHub/myogait}
 }
 ```
 
-A peer-reviewed publication is in preparation.
+The gait-event detectors are described in Fer F, Marques T, Hogrel J-Y,
+Jacoupy M, Feigean R. *Event-specific generalisation of gait-event detectors:
+a 16-dataset benchmark with real markerless-video validation across two
+pose-estimation chains.* Research Square, 2026.
+[doi:10.21203/rs.3.rs-10854607/v1](https://doi.org/10.21203/rs.3.rs-10854607/v1).
+
+## Contributing
+
+Bug reports, questions and pull requests are welcome — see
+[CONTRIBUTING.md](CONTRIBUTING.md) and the
+[Code of Conduct](CODE_OF_CONDUCT.md).
 
 ## License
 

@@ -77,7 +77,7 @@ def cmd_extract(args):
 
 
 def cmd_run(args):
-    """Run full pipeline: extract → normalize → angles → events."""
+    """Run full pipeline: extract -> normalize -> angles -> events."""
     from . import extract, normalize, compute_angles, detect_events, save_json
 
     t0 = time.time()
@@ -133,7 +133,7 @@ def cmd_run(args):
 
 
 def cmd_analyze(args):
-    """Analyze a myogait JSON file: events → cycles → stats → plots."""
+    """Analyze a myogait JSON file: events -> cycles -> stats -> plots."""
     from . import load_json, save_json, detect_events, segment_cycles, analyze_gait
     from .plotting import plot_summary, plot_angles, plot_cycles, plot_events
 
@@ -142,6 +142,17 @@ def cmd_analyze(args):
     if not data.get("angles"):
         print("Error: JSON has no angles. Run the full pipeline first.")
         sys.exit(1)
+
+    # Opt-in sagittal drift correction (must stay off by default: the
+    # correction family is validated on healthy adults only — see the
+    # warnings at the top of myogait/corrections.py).
+    if getattr(args, "detrend", False):
+        from .corrections import apply_linear_detrend
+
+        data = apply_linear_detrend(data)
+        save_json(data, args.json_file)
+        print("Detrend: removed linear drift from joint angles "
+              "(see corrections module caveats).")
 
     # Detect events if not present
     if not data.get("events"):
@@ -286,13 +297,13 @@ def cmd_batch(args):
             data = normalize(
                 data,
                 filters=cfg.get("normalize", {}).get("filters", ["butterworth"]),
-                butterworth_cutoff=cfg.get("normalize", {}).get("butterworth_cutoff", 4.0),
+                butterworth_cutoff=cfg.get("normalize", {}).get("butterworth_cutoff", 8.0),
             )
 
             data = compute_angles(
                 data,
                 method=cfg.get("angles", {}).get("method", "sagittal_vertical_axis"),
-                correction_factor=cfg.get("angles", {}).get("correction_factor", 0.8),
+                correction_factor=cfg.get("angles", {}).get("correction_factor", 1.0),
             )
 
             data = detect_events(
@@ -461,6 +472,80 @@ def cmd_setup_sapiens2(args):
     print(f"  >>> mg.extract('video.mp4', model='sapiens2-{alias}')")
 
 
+def cmd_setup_mmpose(args):
+    """One-shot, user-friendly install of the MMPose backend (HRNet, RTMPose-m).
+
+    MMPose needs four *compatible* OpenMMLab packages (mmengine, mmcv, mmdet,
+    mmpose). Installing them by hand is the usual failure point on Windows:
+    ``mmcv`` ships no source build and plain ``pip`` picks a wheel that does
+    not match the installed torch/CUDA. ``mim`` (OpenMMLab's own installer)
+    resolves the versions and fetches the prebuilt ``mmcv`` wheel matching the
+    *installed* torch + CUDA automatically, so we drive the install through it.
+    """
+    import importlib
+    import importlib.util
+    import subprocess
+
+    # 1) torch must be present first — mim picks the mmcv wheel from it.
+    if importlib.util.find_spec("torch") is None:
+        print(
+            "PyTorch is required first (mim reads torch+CUDA to pick the mmcv "
+            "wheel). Install it, e.g.:\n"
+            "  pip install torch --index-url "
+            "https://download.pytorch.org/whl/cu121\n"
+            "then re-run `myogait setup-mmpose`.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    try:
+        import torch
+        print(f"torch {torch.__version__} (CUDA {torch.version.cuda or 'CPU'})")
+    except Exception:  # noqa: BLE001
+        pass
+
+    # 2) openmim (the installer) — pip-install it if missing.
+    if importlib.util.find_spec("mim") is None:
+        if args.no_install:
+            print(
+                "openmim is missing. Install it (`pip install -U openmim`) or "
+                "re-run without --no-install.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        print("Installing openmim...")
+        subprocess.check_call([sys.executable, "-m", "pip", "install", "-U", "openmim"])
+        importlib.invalidate_caches()
+
+    # 3) mim install the full stack — mim resolves the compatible prebuilt
+    #    mmcv wheel for the detected torch/CUDA.
+    packages = ["mmengine", args.mmcv, args.mmdet, args.mmpose]
+    print("Installing the OpenMMLab stack via mim:\n  " + "\n  ".join(packages))
+    subprocess.check_call([sys.executable, "-m", "mim", "install", *packages])
+    importlib.invalidate_caches()
+
+    # 4) Verify the import chain the HRNet/MMPose backends need at runtime.
+    print("Verifying imports...")
+    try:
+        import mmcv          # noqa: F401
+        import mmdet         # noqa: F401
+        import mmpose        # noqa: F401
+        from mmpose.apis import inference_topdown  # noqa: F401
+        print(f"  mmcv {mmcv.__version__} · mmpose {mmpose.__version__} "
+              f"· mmdet {mmdet.__version__}")
+    except Exception as exc:  # noqa: BLE001
+        print(
+            f"Install completed but import failed: {exc}\n"
+            "Usually the mmcv wheel does not match your torch/CUDA. See "
+            "https://mmpose.readthedocs.io/en/latest/installation.html",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    print("\nDone. From now on:")
+    print("  >>> import myogait as mg")
+    print("  >>> mg.extract('video.mp4', model='hrnet')   # HRNet-W48 via MMPose")
+
+
 def cmd_info(args):
     """Display info about a myogait JSON file."""
     from . import load_json
@@ -531,12 +616,12 @@ def main():
     p_extract.set_defaults(func=cmd_extract)
 
     # run (full pipeline)
-    p_run = sub.add_parser("run", help="Run full pipeline: extract → normalize → angles → events")
+    p_run = sub.add_parser("run", help="Run full pipeline: extract -> normalize -> angles -> events")
     p_run.add_argument("video", help="Path to video file")
     p_run.add_argument("-m", "--model", default="mediapipe", help="Pose model (default: mediapipe)")
     p_run.add_argument("-o", "--output", help="Output JSON path (default: video.json)")
     p_run.add_argument("--max-frames", type=int, help="Max frames to process")
-    p_run.add_argument("--cutoff", type=float, default=4.0, help="Butterworth cutoff Hz (default: 4.0)")
+    p_run.add_argument("--cutoff", type=float, default=8.0, help="Butterworth cutoff Hz (default: 8.0)")
     p_run.add_argument("--correction", type=float, default=0.8, help="Angle correction factor (default: 0.8)")
     p_run.add_argument("--no-filter", action="store_true", help="Skip filtering")
     p_run.add_argument("--no-calibration", action="store_true", help="Skip neutral calibration")
@@ -556,7 +641,7 @@ def main():
     p_run.set_defaults(func=cmd_run)
 
     # analyze
-    p_analyze = sub.add_parser("analyze", help="Analyze a myogait JSON: events → cycles → stats → plots")
+    p_analyze = sub.add_parser("analyze", help="Analyze a myogait JSON: events -> cycles -> stats -> plots")
     p_analyze.add_argument("json_file", help="Path to myogait JSON file (with angles)")
     p_analyze.add_argument("-o", "--output-dir", default=".", help="Directory for plots (default: .)")
     p_analyze.add_argument("--no-plots", action="store_true", help="Skip plot generation")
@@ -565,6 +650,13 @@ def main():
     p_analyze.add_argument("--mot", action="store_true", help="Export OpenSim .mot file")
     p_analyze.add_argument("--trc", action="store_true", help="Export OpenSim .trc file")
     p_analyze.add_argument("--excel", action="store_true", help="Export Excel workbook")
+    p_analyze.add_argument(
+        "--detrend",
+        action="store_true",
+        help="Remove slow sagittal drift from joint angles before analysis "
+             "(opt-in; validated on healthy-adult data only — see "
+             "myogait.corrections caveats)",
+    )
     p_analyze.set_defaults(func=cmd_analyze)
 
     # batch
@@ -615,6 +707,23 @@ def main():
              "for thin runtimes (the .pt2 alone is enough).",
     )
     p_setup.set_defaults(func=cmd_setup_sapiens2)
+
+    # setup-mmpose
+    p_mm = sub.add_parser(
+        "setup-mmpose",
+        help=("One-shot setup for the MMPose backend (HRNet / RTMPose-m): "
+              "installs mmengine+mmcv+mmdet+mmpose via mim, auto-matching "
+              "your torch/CUDA."),
+    )
+    p_mm.add_argument("--mmcv", default="mmcv>=2.0.1,<2.3",
+                      help="mmcv version spec (default: mmcv>=2.0.1,<2.3).")
+    p_mm.add_argument("--mmdet", default="mmdet>=3.2.0",
+                      help="mmdet version spec (default: mmdet>=3.2.0).")
+    p_mm.add_argument("--mmpose", default="mmpose>=1.3.1",
+                      help="mmpose version spec (default: mmpose>=1.3.1).")
+    p_mm.add_argument("--no-install", action="store_true",
+                      help="Do not pip-install openmim; fail if missing.")
+    p_mm.set_defaults(func=cmd_setup_mmpose)
 
     args = parser.parse_args()
     _setup_logging(args.verbose)

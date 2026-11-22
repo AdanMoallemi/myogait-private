@@ -52,3 +52,52 @@ def test_schema_save_load_unicode_content(tmp_path):
     save_json(payload, path)
     loaded = load_json(path)
     assert loaded["subject"]["notes"] == payload["subject"]["notes"]
+
+
+def test_load_config_does_not_share_subdicts_with_defaults(tmp_path):
+    """Regression: a loaded config must never alias DEFAULT_CONFIG's
+    sub-dicts — mutating one user's config corrupted the process-wide
+    defaults (audit finding, fixed in 0.8.0)."""
+    import json
+    from myogait.config import load_config, DEFAULT_CONFIG
+
+    p = tmp_path / "user.json"
+    p.write_text(json.dumps({"extract": {"model": "mediapipe"}}))
+    merged = load_config(str(p))
+
+    for key, val in DEFAULT_CONFIG.items():
+        if isinstance(val, dict):
+            assert merged[key] is not val, f"sub-dict '{key}' is shared"
+
+    # Mutating the merged config must leave the defaults untouched.
+    probe_key = next(k for k, v in DEFAULT_CONFIG.items() if isinstance(v, dict))
+    probe_sub = next(iter(DEFAULT_CONFIG[probe_key]))
+    original = DEFAULT_CONFIG[probe_key][probe_sub]
+    merged[probe_key][probe_sub] = "corrupted"
+    assert DEFAULT_CONFIG[probe_key][probe_sub] == original
+
+
+def test_save_config_preserves_an_existing_file_when_serialization_fails(tmp_path):
+    from myogait.config import save_config
+
+    target = tmp_path / "study.json"
+    target.write_text('{"stable": true}\n', encoding="utf-8")
+
+    with pytest.raises(TypeError):
+        save_config({"unsupported": object()}, target)
+
+    assert target.read_text(encoding="utf-8") == '{"stable": true}\n'
+    assert not list(tmp_path.glob(".study.json.*.tmp"))
+
+
+def test_deep_merge_does_not_alias_the_override_values():
+    from myogait.config import deep_merge
+
+    base = {"nested": {"defaults": [1]}, "other": 1}
+    override = {"nested": {"provided": [2]}}
+    merged = deep_merge(base, override)
+    merged["nested"]["defaults"].append(3)
+    merged["nested"]["provided"].append(4)
+
+    assert base == {"nested": {"defaults": [1]}, "other": 1}
+    assert override == {"nested": {"provided": [2]}}

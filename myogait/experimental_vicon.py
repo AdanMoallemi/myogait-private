@@ -28,6 +28,32 @@ _ANGLE_CANDIDATES = {
     "ankle_R": ("Rankle", "r_ankle"),
 }
 
+# Joints considered for video<->VICON temporal synchronization, in priority
+# order.  Knees first: they have the largest sagittal range of motion during
+# gait, which gives the strongest cross-correlation signal.  Hips are kept as
+# a fallback for recordings where knee tracking is partial or missing (common
+# in slow pathological gait, e.g. DMD/SMA).
+_SYNC_CANDIDATE_JOINTS = ("knee_L", "knee_R", "hip_L", "hip_R")
+
+# Minimum number of samples on the best candidate signal for a meaningful
+# cross-correlation lag estimate (10 samples at 30 fps ~= 0.33 s of motion).
+_MIN_SYNC_SAMPLES = 10
+
+
+class SyncError(ValueError):
+    """Video<->VICON temporal synchronization failed.
+
+    Carries a structured diagnostic (per-candidate sample counts) so
+    callers such as the benchmark orchestrator can report WHY the sync
+    failed instead of a bare message.  Inherits ValueError for
+    backward compatibility with existing ``except ValueError`` handlers.
+    """
+
+    def __init__(self, message: str, candidates: dict, required: int):
+        super().__init__(message)
+        self.candidates = dict(candidates)
+        self.required = int(required)
+
 _LANDMARK_TO_VICON_MARKERS = {
     "LEFT_HIP": ("LHJC",),
     "RIGHT_HIP": ("RHJC",),
@@ -189,11 +215,10 @@ def _myogait_angle_arrays(data: dict) -> Dict[str, np.ndarray]:
 
 
 def _best_sync_signal(mg_angles: Dict[str, np.ndarray], vc_angles: Dict[str, np.ndarray]) -> Tuple[str, np.ndarray, np.ndarray]:
-    candidates = ("knee_L", "knee_R")
     best_name = None
     best_len = -1
     best_pair = (np.array([]), np.array([]))
-    for name in candidates:
+    for name in _SYNC_CANDIDATE_JOINTS:
         a = _interp_nan(mg_angles.get(name, np.array([])))
         b = _interp_nan(vc_angles.get(name, np.array([])))
         valid = min(len(a), len(b))
@@ -223,8 +248,21 @@ def estimate_vicon_offset_seconds(
     mg_angles = _myogait_angle_arrays(myogait_data)
     vc_angles = vicon_data.get("angles", {})
     signal_name, mg_sig, vc_sig = _best_sync_signal(mg_angles, vc_angles)
-    if len(mg_sig) < 10 or len(vc_sig) < 10:
-        raise ValueError("Not enough angle samples for synchronization")
+    if len(mg_sig) < _MIN_SYNC_SAMPLES or len(vc_sig) < _MIN_SYNC_SAMPLES:
+        counts = {}
+        for name in _SYNC_CANDIDATE_JOINTS:
+            a = _interp_nan(mg_angles.get(name, np.array([])))
+            b = _interp_nan(vc_angles.get(name, np.array([])))
+            counts[name] = int(min(len(a), len(b)))
+        detail = ", ".join(f"{name}={counts[name]}" for name in _SYNC_CANDIDATE_JOINTS)
+        raise SyncError(
+            "Not enough angle samples for synchronization "
+            f"({detail}; need >= {_MIN_SYNC_SAMPLES} on the best candidate). "
+            "Try a longer recording or check that compute_angles() ran on "
+            "the video side.",
+            candidates=counts,
+            required=_MIN_SYNC_SAMPLES,
+        )
 
     # Resample both to common frequency for stable lag estimate.
     common_fps = min(fps_mg, fps_vc)
@@ -340,10 +378,34 @@ def _nearest_abs_diff(a: List[int], b: List[int], fps: float) -> List[float]:
     return diffs
 
 
+def _cmc(mg: np.ndarray, vc: np.ndarray) -> Optional[float]:
+    """Coefficient of Multiple Correlation for two waveforms.
+
+    Kadaba MP et al., "Repeatability of kinematic, kinetic, and
+    electromyographic data in normal adult gait", J Orthop Res 1989 —
+    the standard waveform-similarity index in gait analysis.  Two-curve
+    form: CMC = sqrt(1 - within-frame variance around the frame mean
+    over total variance around the grand mean).  Returns None when the
+    total variance is degenerate; the sqrt argument is clamped at 0
+    (CMC is undefined/0 when curves disagree more than they vary).
+    """
+    if mg.size != vc.size or mg.size < 3:
+        return None
+    grand = float(np.mean(np.concatenate([mg, vc])))
+    frame_mean = (mg + vc) / 2.0
+    within = np.sum((mg - frame_mean) ** 2 + (vc - frame_mean) ** 2) / mg.size
+    total = (np.sum((mg - grand) ** 2 + (vc - grand) ** 2)
+             / (2 * mg.size - 1))
+    if total <= 1e-12:
+        return None
+    return float(np.sqrt(max(0.0, 1.0 - within / total)))
+
+
 def _angle_error_metrics(mg: np.ndarray, vc: np.ndarray) -> dict:
     mask = np.isfinite(mg) & np.isfinite(vc)
     if mask.sum() < 3:
-        return {"n": int(mask.sum()), "rmse_deg": None, "mae_deg": None, "bias_deg": None, "rom_diff_deg": None}
+        return {"n": int(mask.sum()), "rmse_deg": None, "mae_deg": None,
+                "bias_deg": None, "rom_diff_deg": None, "cmc": None}
     d = mg[mask] - vc[mask]
     rom_mg = float(np.nanmax(mg[mask]) - np.nanmin(mg[mask]))
     rom_vc = float(np.nanmax(vc[mask]) - np.nanmin(vc[mask]))
@@ -353,6 +415,7 @@ def _angle_error_metrics(mg: np.ndarray, vc: np.ndarray) -> dict:
         "mae_deg": float(np.mean(np.abs(d))),
         "bias_deg": float(np.mean(d)),
         "rom_diff_deg": float(rom_mg - rom_vc),
+        "cmc": _cmc(mg[mask], vc[mask]),
     }
 
 
@@ -464,6 +527,195 @@ DEFAULT_C3D_MARKER_MAP: Dict[str, List[str]] = {
 }
 
 
+# ── Registered C3D marker conventions ─────────────────────────────────
+# Registry of the marker-naming conventions we see most in the wild.
+# Autodetection scores each convention by how many of the required
+# lower-limb markers it can resolve in the C3D file; the best match
+# is picked automatically by ``load_c3d`` when *marker_mapping* is
+# omitted.  Add new conventions here — one flat dict per convention,
+# keyed by the myogait landmark name, value = list of accepted C3D
+# labels (first match wins, all found markers are averaged).
+
+C3D_MARKER_CONVENTIONS: Dict[str, Dict[str, List[str]]] = {
+    # Vicon Plug-in Gait — by far the most common in clinical labs.
+    "plug_in_gait": {
+        "LEFT_HIP":         ["LASI", "LPSI", "LHJC"],
+        "RIGHT_HIP":        ["RASI", "RPSI", "RHJC"],
+        "LEFT_KNEE":        ["LKNE", "LTHI"],
+        "RIGHT_KNEE":       ["RKNE", "RTHI"],
+        "LEFT_ANKLE":       ["LANK", "LTIB"],
+        "RIGHT_ANKLE":      ["RANK", "RTIB"],
+        "LEFT_HEEL":        ["LHEE"],
+        "RIGHT_HEEL":       ["RHEE"],
+        "LEFT_FOOT_INDEX":  ["LTOE"],
+        "RIGHT_FOOT_INDEX": ["RTOE"],
+        "LEFT_SHOULDER":    ["LSHO"],
+        "RIGHT_SHOULDER":   ["RSHO"],
+        "NOSE":             ["C7", "CLAV", "STRN"],
+    },
+    # ISB medial+lateral bony landmarks (the default used to be this).
+    "iso_biomechanics": DEFAULT_C3D_MARKER_MAP,
+    # Helen Hayes / Newington modified PIG (foot markers renamed).
+    "helen_hayes": {
+        "LEFT_HIP":         ["LASI", "LPSI"],
+        "RIGHT_HIP":        ["RASI", "RPSI"],
+        "LEFT_KNEE":        ["LKNE"],
+        "RIGHT_KNEE":       ["RKNE"],
+        "LEFT_ANKLE":       ["LANK"],
+        "RIGHT_ANKLE":      ["RANK"],
+        "LEFT_HEEL":        ["LHEEL", "LHEE"],
+        "RIGHT_HEEL":       ["RHEEL", "RHEE"],
+        "LEFT_FOOT_INDEX":  ["LFT2", "LMT2", "LTOE"],
+        "RIGHT_FOOT_INDEX": ["RFT2", "RMT2", "RTOE"],
+        "LEFT_SHOULDER":    ["LSHO"],
+        "RIGHT_SHOULDER":   ["RSHO"],
+        "NOSE":             ["C7", "CLAV"],
+    },
+    # Bath BioCV dataset (Evans et al. 2024, doi:10.15125/BATH-01258) —
+    # explicit anatomical labels
+    # with LEFT_/RIGHT_ prefixes and _L / _R suffixes.  Uses the
+    # already-computed joint centres when available (LEFT_HIP etc.).
+    "bath_biocv": {
+        "LEFT_HIP":         ["LEFT_HIP", "ILCREST_L", "ASIS_L"],
+        "RIGHT_HIP":        ["RIGHT_HIP", "ILCREST_R", "ASIS_R"],
+        "LEFT_KNEE":        ["LEFT_KNEE", "KNEE_LAT_L", "KNEE_MED_L"],
+        "RIGHT_KNEE":       ["RIGHT_KNEE", "KNEE_LAT_R", "KNEE_MED_R"],
+        "LEFT_ANKLE":       ["LEFT_ANKLE", "MAL_LAT_L", "MAL_MED_L", "LAJC"],
+        "RIGHT_ANKLE":      ["RIGHT_ANKLE", "MAL_LAT_R", "MAL_MED_R", "RAJC"],
+        "LEFT_HEEL":        ["HEEL_L"],
+        "RIGHT_HEEL":       ["HEEL_R"],
+        "LEFT_FOOT_INDEX":  ["LEFT_MTP", "TOE_L", "MTP1_L", "MTP5_L", "LTOE"],
+        "RIGHT_FOOT_INDEX": ["RIGHT_MTP", "TOE_R", "MTP1_R", "MTP5_R", "RTOE"],
+        "LEFT_SHOULDER":    ["LEFT_SHO", "ACROM_L"],
+        "RIGHT_SHOULDER":   ["RIGHT_SHO", "ACROM_R"],
+        "NOSE":             ["C7", "CLAV"],
+    },
+    # Underscore-prefixed variant (some lab exports).
+    "iso_biomechanics_underscore": {
+        "LEFT_HIP":         ["L_ASIS", "L_HJC"],
+        "RIGHT_HIP":        ["R_ASIS", "R_HJC"],
+        "LEFT_KNEE":        ["L_LFE",  "L_MFE"],
+        "RIGHT_KNEE":       ["R_LFE",  "R_MFE"],
+        "LEFT_ANKLE":       ["L_LM",   "L_MM"],
+        "RIGHT_ANKLE":      ["R_LM",   "R_MM"],
+        "LEFT_HEEL":        ["L_CAL"],
+        "RIGHT_HEEL":       ["R_CAL"],
+        "LEFT_FOOT_INDEX":  ["L_TT2"],
+        "RIGHT_FOOT_INDEX": ["R_TT2"],
+        "LEFT_SHOULDER":    ["L_SHO"],
+        "RIGHT_SHOULDER":   ["R_SHO"],
+        "NOSE":             ["L_ASIS", "R_ASIS"],
+    },
+}
+
+
+# Regex families used as the last-resort fuzzy fallback when no
+# registered convention matches enough markers.  Anchored on the
+# side prefix (L / R / LEFT_ / RIGHT_ / L_ / R_) and the anatomical
+# keyword (ASI, HIP, HJC → hip ; KNE, LFE, MFE, KJC → knee ; ...).
+_C3D_FUZZY_PATTERNS: Dict[str, Tuple[str, ...]] = {
+    "LEFT_HIP":         ("ASIS?", "HJC", "HIP", "ILIAC", "PELV"),
+    "RIGHT_HIP":        ("ASIS?", "HJC", "HIP", "ILIAC", "PELV"),
+    "LEFT_KNEE":        ("KNE", "KJC", "LFE", "MFE", "FEP"),
+    "RIGHT_KNEE":       ("KNE", "KJC", "LFE", "MFE", "FEP"),
+    "LEFT_ANKLE":       ("ANK", "AJC", "LM$", "MM$", "MALL"),
+    "RIGHT_ANKLE":      ("ANK", "AJC", "LM$", "MM$", "MALL"),
+    "LEFT_HEEL":        ("HEE", "HEEL", "CAL"),
+    "RIGHT_HEEL":       ("HEE", "HEEL", "CAL"),
+    "LEFT_FOOT_INDEX":  ("TOE", "TT2", "MT2", "MTP", "FT2"),
+    "RIGHT_FOOT_INDEX": ("TOE", "TT2", "MT2", "MTP", "FT2"),
+    "LEFT_SHOULDER":    ("SHO", "AC$", "ACR"),
+    "RIGHT_SHOULDER":   ("SHO", "AC$", "ACR"),
+    "NOSE":             ("CLAV", "C7", "STRN", "NOSE"),
+}
+
+_REQUIRED_LANDMARKS = (
+    "LEFT_HIP", "RIGHT_HIP",
+    "LEFT_KNEE", "RIGHT_KNEE",
+    "LEFT_ANKLE", "RIGHT_ANKLE",
+)
+
+
+def _side_prefix(landmark: str) -> str:
+    """Return the side prefix regex for a landmark name (LEFT_/RIGHT_)."""
+    if landmark.startswith("LEFT_"):
+        return r"^(L(?![A-Z])|LEFT[_ ]?|L_)"
+    if landmark.startswith("RIGHT_"):
+        return r"^(R(?![A-Z])|RIGHT[_ ]?|R_)"
+    return r"^"
+
+
+def _fuzzy_marker_map(labels: List[str]) -> Dict[str, List[str]]:
+    """Build a mapping by regex-matching each landmark to available labels."""
+    import re
+    mapping: Dict[str, List[str]] = {}
+    for lm, keywords in _C3D_FUZZY_PATTERNS.items():
+        side_re = _side_prefix(lm)
+        candidates: List[str] = []
+        for lbl in labels:
+            up = lbl.upper()
+            if not re.search(side_re, up):
+                continue
+            if any(re.search(kw, up) for kw in keywords):
+                candidates.append(lbl)
+        if candidates:
+            mapping[lm] = candidates
+    return mapping
+
+
+def detect_c3d_convention(
+    labels: List[str],
+) -> Tuple[str, Dict[str, List[str]], Dict[str, int]]:
+    """Autodetect the marker convention used in a C3D label list.
+
+    Scores each registered convention (:data:`C3D_MARKER_CONVENTIONS`)
+    by how many *required* lower-limb landmarks (hip, knee, ankle,
+    both sides) it can resolve.  Falls back to a regex-based fuzzy
+    match when no registered convention resolves enough landmarks.
+
+    Parameters
+    ----------
+    labels : list of str
+        Marker labels from the C3D ``POINT/LABELS`` section.
+
+    Returns
+    -------
+    (name, mapping, scores)
+        - ``name``: the picked convention name (``"fuzzy_fallback"`` if
+          no registered convention was good enough).
+        - ``mapping``: the marker mapping actually used
+          ({landmark: [C3D labels]}).
+        - ``scores``: per-convention count of required landmarks
+          resolved, for diagnostics.
+    """
+    upper_labels = [lbl.upper() for lbl in labels]
+    label_set = set(upper_labels)
+
+    scores: Dict[str, int] = {}
+    resolved: Dict[str, Dict[str, List[str]]] = {}
+    for name, mapping in C3D_MARKER_CONVENTIONS.items():
+        found = {}
+        for lm, candidates in mapping.items():
+            matched = [c for c in candidates if c.upper() in label_set]
+            if matched:
+                # Return the original-case labels
+                found[lm] = [
+                    labels[upper_labels.index(m.upper())] for m in matched
+                ]
+        scores[name] = sum(1 for lm in _REQUIRED_LANDMARKS if lm in found)
+        resolved[name] = found
+
+    # Pick the best convention that resolves at least 4/6 required landmarks
+    best_name = max(scores, key=lambda k: scores[k])
+    if scores[best_name] >= 4:
+        return best_name, resolved[best_name], scores
+
+    # Fallback: fuzzy regex match on the raw labels
+    fuzzy = _fuzzy_marker_map(labels)
+    scores["fuzzy_fallback"] = sum(1 for lm in _REQUIRED_LANDMARKS if lm in fuzzy)
+    return "fuzzy_fallback", fuzzy, scores
+
+
 def load_c3d(
     c3d_path: str | Path,
     marker_mapping: dict | None = None,
@@ -508,7 +760,6 @@ def load_c3d(
         )
 
     c3d = ezc3d.c3d(str(c3d_path))
-    mapping = marker_mapping or DEFAULT_C3D_MARKER_MAP
 
     # ── Extract marker labels and point data ──
     labels = [lbl.strip() for lbl in c3d["parameters"]["POINT"]["LABELS"]["value"]]
@@ -518,21 +769,64 @@ def load_c3d(
 
     label_idx = {lbl: i for i, lbl in enumerate(labels)}
 
+    # ── Resolve which marker convention to use ──
+    if marker_mapping is not None:
+        mapping = marker_mapping
+        convention_name = "user_supplied"
+        conv_scores: Dict[str, int] = {}
+    else:
+        convention_name, mapping, conv_scores = detect_c3d_convention(labels)
+        n_resolved = sum(1 for lm in _REQUIRED_LANDMARKS if lm in mapping)
+        logger.info(
+            "C3D %s: detected convention '%s' — %d/6 required lower-limb "
+            "landmarks resolved  (scores: %s)",
+            c3d_path.name, convention_name, n_resolved,
+            {k: v for k, v in sorted(conv_scores.items(), key=lambda x: -x[1])},
+        )
+        if n_resolved < 4:
+            raise ValueError(
+                f"Could not resolve enough lower-limb markers in "
+                f"{c3d_path.name}.\n"
+                f"  Best convention '{convention_name}' resolved "
+                f"{n_resolved}/6 required landmarks.\n"
+                f"  Convention scores: {conv_scores}\n"
+                f"  Available labels: {labels}\n"
+                f"  Pass an explicit marker_mapping={{'LEFT_HIP': [...], ...}} "
+                f"or add your convention to myogait.experimental_vicon."
+                f"C3D_MARKER_CONVENTIONS."
+            )
+
     # ── Resolve landmarks → 2-D sagittal coords per frame ──
     # For each landmark: pick the first available marker or average all found.
     # Then project: x = ap_axis component, y = -vertical_axis component.
+    #
+    # ezc3d fills missing/occluded samples with an exact (0,0,0) triplet
+    # rather than NaN.  Left as-is, those zeros drag the global min/max
+    # used for normalisation far outside the true motion range and squash
+    # every real trajectory into a narrow band — corrupting every metric
+    # downstream.  Convert them to NaN before averaging so nanmin/nanmax
+    # ignore them.
     raw: Dict[str, np.ndarray] = {}  # landmark → (n_frames, 2)
+    raw3d: Dict[str, np.ndarray] = {}  # landmark → (n_frames, 3), full 3-D
     for lm_name, candidates in mapping.items():
         found = [label_idx[mk] for mk in candidates if mk in label_idx]
         if not found:
             logger.debug("C3D: no marker found for %s (tried %s)", lm_name, candidates)
             continue
         # points shape: (4, n_markers, n_frames) → take XYZ (first 3 rows)
-        pts = points[:3, found, :]  # (3, n_found, n_frames)
+        pts = points[:3, found, :].astype(float, copy=True)  # (3, n_found, n_frames)
+        # Mark frames where all three coords are exactly zero as missing.
+        missing = (pts == 0.0).all(axis=0)  # (n_found, n_frames)
+        pts[:, missing] = np.nan
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", RuntimeWarning)
             avg = np.nanmean(pts, axis=1)  # (3, n_frames)
         raw[lm_name] = np.column_stack([avg[ap_axis], avg[vertical_axis]])
+        # Keep the full 3-D marker position too — the sagittal 2-D
+        # projection is faithful for the hip and knee but collapses the
+        # ankle (the foot segment rotates partly out of the projection
+        # plane), so a proper ankle reference needs the 3-D positions.
+        raw3d[lm_name] = np.column_stack([avg[0], avg[1], avg[2]])
 
     if not raw:
         raise ValueError(
@@ -541,11 +835,19 @@ def load_c3d(
         )
 
     # ── Normalise to [0, 1] using global bounds ──
+    # CRITICAL: use ONE isotropic scale for both axes.  A walkway
+    # recording spans ~6 m antero-posteriorly but only ~2 m
+    # vertically; normalising each axis by its own range squashes the
+    # walking axis ~3:1 and every joint angle computed downstream is
+    # geometrically wrong (hip ROM collapses to a few degrees, ankle
+    # ROM explodes).  Dividing both axes by the same (largest) range
+    # preserves the physical aspect ratio.
     all_xy = np.vstack(list(raw.values()))  # (total_pts, 2)
     x_min, y_min = np.nanmin(all_xy, axis=0)
     x_max, y_max = np.nanmax(all_xy, axis=0)
     x_range = x_max - x_min if (x_max - x_min) > 0 else 1.0
     y_range = y_max - y_min if (y_max - y_min) > 0 else 1.0
+    scale = max(x_range, y_range)
 
     virtual_w = 1000
     virtual_h = 1000
@@ -556,9 +858,9 @@ def load_c3d(
         landmarks = {}
         conf_sum = 0.0
         for lm_name, xy in raw.items():
-            nx = float((xy[fi, 0] - x_min) / x_range)
+            nx = float((xy[fi, 0] - x_min) / scale)
             # Invert vertical so that up in world = small y in image space
-            ny = 1.0 - float((xy[fi, 1] - y_min) / y_range)
+            ny = 1.0 - float((xy[fi, 1] - y_min) / scale)
             vis = 0.0 if np.isnan(xy[fi, 0]) or np.isnan(xy[fi, 1]) else 1.0
             landmarks[lm_name] = {"x": nx, "y": ny, "visibility": vis}
             conf_sum += vis
@@ -589,6 +891,93 @@ def load_c3d(
             "keypoint_format": "mediapipe33",
             "n_landmarks": len(raw),
             "source_file": str(c3d_path),
+            "c3d_convention": convention_name,
+            "c3d_convention_scores": conv_scores,
+            "c3d_marker_mapping": {lm: mks for lm, mks in mapping.items()
+                                     if lm in raw},
         },
+        # Full 3-D marker positions (n_frames, 3) per landmark, kept for
+        # compute_c3d_reference_angles (proper 3-D ankle).  numpy arrays,
+        # so drop this key before save_json if you serialise the dict.
+        "c3d_markers_3d": {lm: arr for lm, arr in raw3d.items()},
         "frames": frames,
     }
+
+
+def compute_c3d_reference_angles(data: dict, joints=("ankle",)) -> dict:
+    """Recompute joint angles for a C3D directly from the 3-D markers.
+
+    :func:`load_c3d` projects markers onto the sagittal plane and lets
+    :func:`compute_angles` work in 2-D.  That is faithful for the hip
+    and knee (they move almost entirely in the sagittal plane —
+    validated at r >= 0.99 vs a Vicon 3-D biomechanical model), but it
+    **collapses the ankle**: the foot segment rotates partly out of the
+    projection plane, so the 2-D ankle correlates only r ~ 0.4 with the
+    true 3-D angle and its range of motion is halved.
+
+    This helper recomputes the requested joints from the full 3-D
+    marker positions stored by ``load_c3d`` (as the angle between the
+    relevant 3-D segment vectors) and overwrites them in
+    ``data["angles"]["frames"]``.  On the Bath/ISB and iso_biomechanics
+    marker sets the 3-D ankle matches the lab's gold-standard model at
+    r = 0.98 (vs 0.39 for the 2-D projection).
+
+    Only the ankle is recomputed by default — the hip and knee 2-D
+    projections are already faithful and their 3-D reference vectors
+    (which need a pelvis/trunk frame) are less robust from markers
+    alone.  Requires ``data`` from :func:`load_c3d` (needs
+    ``data["c3d_markers_3d"]``) with :func:`compute_angles` already run.
+    """
+    m3d = data.get("c3d_markers_3d")
+    if not m3d:
+        raise ValueError(
+            "compute_c3d_reference_angles requires data from load_c3d "
+            "(missing c3d_markers_3d). Call load_c3d then compute_angles first."
+        )
+    if "angles" not in data or "frames" not in data["angles"]:
+        raise ValueError("Run compute_angles() before compute_c3d_reference_angles().")
+
+    def _seg(a, b):
+        va = np.asarray(m3d.get(a), dtype=float) if a in m3d else None
+        vb = np.asarray(m3d.get(b), dtype=float) if b in m3d else None
+        if va is None or vb is None:
+            return None
+        return va - vb
+
+    def _angle_between(u, v):
+        num = np.sum(u * v, axis=1)
+        den = np.linalg.norm(u, axis=1) * np.linalg.norm(v, axis=1) + 1e-9
+        return np.degrees(np.arccos(np.clip(num / den, -1.0, 1.0)))
+
+    frames = data["angles"]["frames"]
+    for side in ("L", "R"):
+        knee = "LEFT_KNEE" if side == "L" else "RIGHT_KNEE"
+        ankle = "LEFT_ANKLE" if side == "L" else "RIGHT_ANKLE"
+        heel = "LEFT_HEEL" if side == "L" else "RIGHT_HEEL"
+        toe = "LEFT_FOOT_INDEX" if side == "L" else "RIGHT_FOOT_INDEX"
+
+        if "ankle" in joints:
+            shank = _seg(knee, ankle)          # ankle -> knee (points up)
+            foot = _seg(toe, heel)             # heel -> toe (points forward)
+            if shank is not None and foot is not None:
+                # Dorsiflexion positive: neutral foot is ~perpendicular to
+                # the shank, so 90 - angle gives + for dorsiflexion.
+                ank = 90.0 - _angle_between(shank, foot)
+                for i, f in enumerate(frames):
+                    if i < len(ank):
+                        v = float(ank[i])
+                        f[f"ankle_{side}"] = None if np.isnan(v) else v
+
+        if "knee" in joints:
+            hipc = "LEFT_HIP" if side == "L" else "RIGHT_HIP"
+            thigh = _seg(hipc, knee)
+            shank = _seg(knee, ankle)
+            if thigh is not None and shank is not None:
+                kn = 180.0 - _angle_between(thigh, shank)
+                for i, f in enumerate(frames):
+                    if i < len(kn):
+                        v = float(kn[i])
+                        f[f"knee_{side}"] = None if np.isnan(v) else v
+
+    data["angles"]["ankle_reference"] = "c3d_3d_markers"
+    return data

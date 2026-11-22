@@ -14,9 +14,11 @@ extract
 import logging
 from datetime import datetime
 from pathlib import Path
-from typing import Optional, Dict, Any, Union, Tuple, Sequence, List
+from typing import Any, Dict, Optional, Sequence, Tuple, Union
 
 import cv2
+
+from .exceptions import UnreadableVideoError
 import numpy as np
 
 from .constants import (
@@ -491,7 +493,7 @@ def extract(
     # Open video for metadata
     cap = cv2.VideoCapture(video_path)
     if not cap.isOpened():
-        raise ValueError(f"Cannot open video: {video_path}")
+        raise UnreadableVideoError(f"Cannot open video: {video_path}")
 
     source_fps = cap.get(cv2.CAP_PROP_FPS)
     source_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
@@ -870,10 +872,10 @@ def extract(
         extraction_meta["experimental"] = {
             "family": "video_degradation",
             "scope": "AIM benchmark only",
-            "source_fps": round(source_fps, 4),
-            "source_resolution": [source_width, source_height],
-            "frame_stride": frame_stride,
-            "effective_fps": round(fps, 4),
+            "source_fps": round(float(source_fps), 4),
+            "source_resolution": [int(source_width), int(source_height)],
+            "frame_stride": int(frame_stride),
+            "effective_fps": round(float(fps), 4),
             "config": exp_cfg,
         }
     if has_auxiliary:
@@ -978,8 +980,8 @@ def detect_treadmill(data: dict) -> dict:
 
     if data.get("extraction") is None:
         data["extraction"] = {}
-    data["extraction"]["treadmill"] = detected
-    data["extraction"]["treadmill_confidence"] = round(confidence, 3)
+    data["extraction"]["treadmill"] = bool(detected)
+    data["extraction"]["treadmill_confidence"] = round(float(confidence), 3)
 
     logger.info(
         f"Treadmill detection: {'treadmill' if detected else 'overground'} "
@@ -1524,7 +1526,7 @@ def auto_crop_roi(
     """
     cap = cv2.VideoCapture(video_path)
     if not cap.isOpened():
-        raise ValueError(f"Cannot open video: {video_path}")
+        raise UnreadableVideoError(f"Cannot open video: {video_path}")
 
     width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))

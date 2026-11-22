@@ -7,21 +7,23 @@ compares each run against one VICON trial.
 
 from __future__ import annotations
 
-import json
 from copy import deepcopy
+import hashlib
 from itertools import product
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import pandas as pd
 
+from .config import deep_merge
 from .extract import extract
 from .normalize import normalize
 from .angles import compute_angles
 from .events import detect_events, list_event_methods
-from .schema import save_json
+from .schema import dumps_json_safe, save_json
 from .models import list_models
-from .experimental_vicon import run_single_trial_vicon_benchmark
+from .experimental_vicon import SyncError, run_single_trial_vicon_benchmark
+from . import __version__
 
 
 DEFAULT_SINGLE_PAIR_BENCHMARK_CONFIG: Dict[str, Any] = {
@@ -54,7 +56,7 @@ DEFAULT_SINGLE_PAIR_BENCHMARK_CONFIG: Dict[str, Any] = {
     },
     "angle_kwargs": {
         "method": "sagittal_vertical_axis",
-        "correction_factor": 0.8,
+        "correction_factor": 1.0,
         "calibrate": True,
     },
     "vicon": {
@@ -65,21 +67,11 @@ DEFAULT_SINGLE_PAIR_BENCHMARK_CONFIG: Dict[str, Any] = {
 }
 
 
-def _deep_merge(base: dict, override: dict) -> dict:
-    out = deepcopy(base)
-    for k, v in override.items():
-        if isinstance(v, dict) and isinstance(out.get(k), dict):
-            out[k] = _deep_merge(out[k], v)
-        else:
-            out[k] = v
-    return out
-
-
 def build_single_pair_benchmark_config(config: Optional[dict] = None) -> dict:
     """Build benchmark config with defaults."""
     if config is None:
         return deepcopy(DEFAULT_SINGLE_PAIR_BENCHMARK_CONFIG)
-    return _deep_merge(DEFAULT_SINGLE_PAIR_BENCHMARK_CONFIG, config)
+    return deep_merge(DEFAULT_SINGLE_PAIR_BENCHMARK_CONFIG, config)
 
 
 def _resolve_models(models_cfg: Any) -> List[str]:
@@ -126,6 +118,28 @@ def _flatten_row_metrics(row: dict, data: dict) -> dict:
         row[f"{ev}_median_ms"] = em.get("median_ms")
 
     return row
+
+
+def _file_sha256(path: Path) -> str | None:
+    """Return an input content hash without loading it into memory."""
+    if not path.is_file():
+        return None
+    digest = hashlib.sha256()
+    with path.open("rb") as source:
+        for chunk in iter(lambda: source.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def benchmark_input_fingerprints(
+    video_path: str | Path, vicon_trial_dir: str | Path
+) -> dict[str, str | None]:
+    """Fingerprint the exact files consumed by one video/VICON benchmark."""
+    trial_dir = Path(vicon_trial_dir)
+    fingerprints = {"video_sha256": _file_sha256(Path(video_path))}
+    for filename in ("res_angles_t.mat", "points3D_t.mat", "cycle.mat"):
+        fingerprints[f"vicon_{filename}_sha256"] = _file_sha256(trial_dir / filename)
+    return fingerprints
 
 
 def run_single_pair_benchmark(
@@ -221,8 +235,18 @@ def run_single_pair_benchmark(
             save_json(data, run_json)
             row = _flatten_row_metrics(row, data)
 
+        except SyncError as exc:
+            row["status"] = "error"
+            row["error_kind"] = "SyncError"
+            row["error"] = str(exc)
+            if not continue_on_error:
+                rows.append(row)
+                summary_path = out_dir / "benchmark_summary.csv"
+                pd.DataFrame(rows).to_csv(summary_path, index=False)
+                raise
         except Exception as exc:  # noqa: BLE001
             row["status"] = "error"
+            row["error_kind"] = type(exc).__name__
             row["error"] = str(exc)
             if not continue_on_error:
                 rows.append(row)
@@ -246,9 +270,11 @@ def run_single_pair_benchmark(
         "n_error": int((df["status"] == "error").sum()),
         "summary_csv": str(summary_path),
         "runs_dir": str(runs_dir),
+        "myogait_version": __version__,
+        "input_fingerprints": benchmark_input_fingerprints(video_path, vicon_trial_dir),
         "config": cfg,
     }
     with open(out_dir / "benchmark_manifest.json", "w", encoding="utf-8") as f:
-        json.dump(manifest, f, indent=2, ensure_ascii=False)
+        f.write(dumps_json_safe(manifest))
 
     return manifest

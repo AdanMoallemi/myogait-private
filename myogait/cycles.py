@@ -28,6 +28,10 @@ Functions
 ---------
 segment_cycles
     Segment gait data into normalized cycles and compute averages.
+summarize_cycles
+    Per-side mean +/- SD curves of a list of cycles.
+reject_outlier_cycles
+    Drop cycles whose shape is far from the per-side median curve.
 ensemble_average
     Compute ensemble averages across multiple trials.
 """
@@ -137,7 +141,96 @@ def _normalize_to_percent(values: np.ndarray, n_points: int = 101) -> np.ndarray
     """Resample a variable-length array to n_points (0-100%)."""
     original = np.linspace(0, 100, len(values))
     target = np.linspace(0, 100, n_points)
-    return np.asarray(np.interp(target, original, values))
+    return np.interp(target, original, values)
+
+
+def summarize_cycles(cycles: List[dict]) -> dict:
+    """Per-side mean and SD of the normalized curves of *cycles*.
+
+    Returns ``{side: {"n_cycles", "<joint>_mean", "<joint>_std", ...}}``
+    for the sagittal joints and, when present, the frontal-plane ones.
+    """
+    summary = {}
+    for side in ("left", "right"):
+        side_cycles = [c for c in cycles if c.get("side") == side]
+        if not side_cycles:
+            continue
+        side_summary = {"n_cycles": len(side_cycles)}
+        for joint in list(_JOINT_KEYS) + list(_FRONTAL_KEYS):
+            arrs = [np.array(c["angles_normalized"][joint], dtype=float)
+                    for c in side_cycles
+                    if c.get("angles_normalized", {}).get(joint) is not None]
+            if not arrs:
+                continue
+            stacked = np.stack(arrs)  # (n_cycles, n_points)
+            side_summary[f"{joint}_mean"] = np.mean(stacked, axis=0).tolist()
+            side_summary[f"{joint}_std"] = np.std(stacked, axis=0).tolist()
+        summary[side] = side_summary
+    return summary
+
+
+def reject_outlier_cycles(
+    cycles: dict,
+    k: float = 2.5,
+    joints: tuple = ("hip", "knee", "ankle"),
+    min_cycles: int = 5,
+) -> dict:
+    """Drop cycles whose shape is far from the per-side median curve.
+
+    Cycles recorded while the subject enters or leaves the field of
+    view, or partly occluded, are noisier: their push-off timing and
+    amplitude scatter, and averaging them flattens the mean curve
+    (mostly the ankle push-off and the knee swing peak).  For each side
+    and each joint, the RMS distance of every cycle to the per-side
+    median curve is computed; a cycle is rejected when, for any joint,
+    that distance exceeds ``median + k * 1.4826 * MAD`` of the
+    distances (a robust z-score above *k*).
+
+    Sides with fewer than *min_cycles* cycles are left untouched.
+
+    Parameters
+    ----------
+    cycles : dict
+        Output of :func:`segment_cycles` (``"cycles"`` and ``"summary"``).
+    k : float
+        Robust z-score threshold (default 2.5).
+    joints : tuple
+        Joints whose curves are tested.
+    min_cycles : int
+        Minimum number of cycles on a side to apply the test.
+
+    Returns
+    -------
+    dict
+        Same structure with the kept cycles, a recomputed ``summary``
+        and ``summary["n_rejected_outlier"]``.
+    """
+    cycle_list = list(cycles.get("cycles", []))
+    keep = np.ones(len(cycle_list), dtype=bool)
+    for side in ("left", "right"):
+        idx = [i for i, c in enumerate(cycle_list) if c.get("side") == side]
+        if len(idx) < min_cycles:
+            continue
+        for joint in joints:
+            curves = [cycle_list[i].get("angles_normalized", {}).get(joint)
+                      for i in idx]
+            if any(cv is None for cv in curves):
+                continue
+            C = np.asarray(curves, dtype=float)
+            med = np.nanmedian(C, axis=0)
+            d = np.sqrt(np.nanmean((C - med) ** 2, axis=1))
+            mad = np.median(np.abs(d - np.median(d)))
+            thr = np.median(d) + k * 1.4826 * mad
+            for i, di in zip(idx, d):
+                if np.isfinite(di) and di > thr:
+                    keep[i] = False
+    kept = [c for c, ok in zip(cycle_list, keep) if ok]
+    summary = summarize_cycles(kept)
+    old = cycles.get("summary", {}) or {}
+    if "n_rejected_quality" in old:
+        summary["n_rejected_quality"] = old["n_rejected_quality"]
+    summary["n_rejected_outlier"] = int((~keep).sum())
+    return {**cycles, "cycles": kept, "summary": summary}
 
 
 def segment_cycles(
@@ -145,6 +238,8 @@ def segment_cycles(
     n_points: int = 101,
     min_duration: float = 0.4,
     max_duration: float = 2.5,
+    min_confidence: float = None,
+    min_coherence: float = None,
 ) -> dict:
     """Segment gait data into cycles and compute normalized averages.
 
@@ -162,14 +257,22 @@ def segment_cycles(
         Minimum valid cycle duration in seconds (default 0.4).
     max_duration : float, optional
         Maximum valid cycle duration in seconds (default 2.5).
+    min_confidence : float, optional
+        Quality gate: reject a cycle whose mean per-frame landmark
+        ``confidence`` over its span is below this threshold (0-1).
+        ``None`` (default) disables the gate.  Rejections are counted
+        in the returned ``summary["n_rejected_quality"]``.
+    min_coherence : float, optional
+        Quality gate on the per-frame biomechanical ``coherence`` score
+        (populated by :func:`myogait.frame_coherence_score`); a cycle
+        whose mean coherence is below the threshold is rejected.
+        Silently inactive when coherence scores are absent.
 
     Returns
     -------
     dict
-        Keys: ``cycles`` (list of cycle dicts), ``summary``
-        (per-side mean/std curves), and ``skipped_sides`` (list of
-        dicts with ``side``, ``reason``, and ``n_hs`` for each side
-        that was skipped due to insufficient heel-strike events).
+        Keys: ``cycles`` (list of cycle dicts) and ``summary``
+        (per-side mean/std curves).
 
     Raises
     ------
@@ -190,8 +293,25 @@ def segment_cycles(
     fps = data.get("meta", {}).get("fps", 30.0)
     angle_frames = angles.get("frames", [])
 
+    # Per-frame quality series for the optional cycle gates, indexed by
+    # original frame_idx (raw frames may be head-trimmed).
+    quality_conf = {}
+    quality_coh = {}
+    if min_confidence is not None or min_coherence is not None:
+        for i, f in enumerate(data.get("frames", [])):
+            fi = f.get("frame_idx", i)
+            if f.get("confidence") is not None:
+                quality_conf[fi] = float(f["confidence"])
+            if f.get("coherence") is not None:
+                quality_coh[fi] = float(f["coherence"])
+
+    def _mean_quality(series, start, end):
+        vals = [series[fi] for fi in range(start, end + 1) if fi in series]
+        return float(np.mean(vals)) if vals else None
+
+    n_rejected_quality = 0
+
     cycles = []
-    skipped_sides: List[dict] = []
     cycle_id = 0
 
     for side in ("left", "right"):
@@ -200,11 +320,6 @@ def segment_cycles(
 
         if len(hs_list) < 2:
             logger.info(f"Not enough HS events for {side} side ({len(hs_list)})")
-            skipped_sides.append({
-                "side": side,
-                "reason": "insufficient_hs_events",
-                "n_hs": len(hs_list),
-            })
             continue
 
         # Sort by frame
@@ -220,6 +335,24 @@ def segment_cycles(
             if duration < min_duration or duration > max_duration:
                 logger.debug(f"Cycle {side} {start_frame}-{end_frame} rejected: {duration:.2f}s")
                 continue
+
+            # Optional quality gates (landmark confidence / coherence)
+            if min_confidence is not None:
+                q = _mean_quality(quality_conf, start_frame, end_frame)
+                if q is not None and q < min_confidence:
+                    logger.debug(
+                        f"Cycle {side} {start_frame}-{end_frame} rejected: "
+                        f"mean confidence {q:.2f} < {min_confidence}")
+                    n_rejected_quality += 1
+                    continue
+            if min_coherence is not None:
+                q = _mean_quality(quality_coh, start_frame, end_frame)
+                if q is not None and q < min_coherence:
+                    logger.debug(
+                        f"Cycle {side} {start_frame}-{end_frame} rejected: "
+                        f"mean coherence {q:.2f} < {min_coherence}")
+                    n_rejected_quality += 1
+                    continue
 
             # Find toe-off within cycle
             to_frame = _find_to_between(to_sorted, start_frame, end_frame)
@@ -253,44 +386,9 @@ def segment_cycles(
             })
             cycle_id += 1
 
-    # Compute summary statistics
-    summary = {}
-    for side in ("left", "right"):
-        side_cycles = [c for c in cycles if c["side"] == side]
-        if not side_cycles:
-            continue
-
-        side_summary = {"n_cycles": len(side_cycles)}
-
-        # Sagittal joints
-        for joint in _JOINT_KEYS:
-            arrs = []
-            for c in side_cycles:
-                vals = c["angles_normalized"].get(joint)
-                if vals is not None:
-                    arrs.append(np.array(vals))
-            if not arrs:
-                continue
-
-            stacked = np.stack(arrs)  # (n_cycles, n_points)
-            side_summary[f"{joint}_mean"] = np.mean(stacked, axis=0).tolist()
-            side_summary[f"{joint}_std"] = np.std(stacked, axis=0).tolist()
-
-        # Frontal-plane joints (only when present in cycle data)
-        for frontal_joint in _FRONTAL_KEYS:
-            arrs = []
-            for c in side_cycles:
-                vals = c["angles_normalized"].get(frontal_joint)
-                if vals is not None:
-                    arrs.append(np.array(vals))
-            if not arrs:
-                continue
-
-            stacked = np.stack(arrs)
-            side_summary[f"{frontal_joint}_mean"] = np.mean(stacked, axis=0).tolist()
-            side_summary[f"{frontal_joint}_std"] = np.std(stacked, axis=0).tolist()
-
-        summary[side] = side_summary
+    summary = summarize_cycles(cycles)
+    if min_confidence is not None or min_coherence is not None:
+        summary["n_rejected_quality"] = n_rejected_quality
 
     logger.info(
         f"Segmented {len(cycles)} valid cycles: "
@@ -298,9 +396,8 @@ def segment_cycles(
         f"R={summary.get('right', {}).get('n_cycles', 0)}"
     )
 
-    result = {"cycles": cycles, "summary": summary, "skipped_sides": skipped_sides}
-    data["cycles_data"] = result
-    return result
+    data["cycles_data"] = {"cycles": cycles, "summary": summary}
+    return {"cycles": cycles, "summary": summary}
 
 
 def ensemble_average(

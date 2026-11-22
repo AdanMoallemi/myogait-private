@@ -11,11 +11,35 @@ import numpy as np
 
 logger = logging.getLogger(__name__)
 
+_DEFAULT_FPS = 30.0
+
+
+def safe_frame_rate(data: dict, default: float = _DEFAULT_FPS) -> float:
+    """Return a finite, strictly-positive acquisition rate from a pivot.
+
+    ``data["meta"]["fps"]`` can arrive as ``0``, a negative value, ``None``,
+    an empty/absent meta block, or even a non-numeric string. Reading it raw
+    caused a ``ZeroDivisionError`` (fps=0), silent zero-cycle output (fps<0),
+    or a crash in normalisation (``None``/``"banana"``). Coerce all of those
+    to a sane default so event detection and normalisation never blow up on a
+    malformed header.
+    """
+    meta = data.get("meta")
+    raw_fps = meta.get("fps", default) if isinstance(meta, dict) else default
+    try:
+        fps = float(raw_fps)
+    except (TypeError, ValueError):
+        return default
+    if not np.isfinite(fps) or fps <= 0:
+        return default
+    return fps
+
 
 def detect_walking_direction_from_feet(
     data: dict,
     toe_names: tuple = ("LEFT_FOOT_INDEX", "RIGHT_FOOT_INDEX"),
     heel_names: tuple = ("LEFT_HEEL", "RIGHT_HEEL"),
+    default: str = "right",
 ) -> str:
     """Detect walking direction from foot orientation (toe vs heel).
 
@@ -40,16 +64,23 @@ def detect_walking_direction_from_feet(
     heel_names : tuple of str, optional
         Landmark names for left and right heels
         (default ``("LEFT_HEEL", "RIGHT_HEEL")``).
+    default : str, optional
+        Value returned when direction cannot be determined from the feet
+        (no frames, or no frame has both a toe and a heel). Defaults to
+        ``"right"`` for backward compatibility; pass ``"unknown"`` to let a
+        caller fall back to a displacement heuristic instead of silently
+        assuming left-to-right (which flips HS/TO on a right-to-left walk
+        whenever the feet are occluded).
 
     Returns
     -------
     str
         ``"right"`` if walking to the right, ``"left"`` if walking
-        to the left.
+        to the left, or *default* when the feet give no usable signal.
     """
     frames = data.get("frames", [])
     if not frames:
-        return "right"  # default: assume left-to-right
+        return default
 
     diffs = []
     for frame in frames:
@@ -66,7 +97,7 @@ def detect_walking_direction_from_feet(
                     diffs.append(tx - hx)
 
     if not diffs:
-        return "right"  # default
+        return default
 
     median_diff = float(np.median(diffs))
     direction = "right" if median_diff > 0 else "left"

@@ -3,6 +3,7 @@
 import json
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 
 from myogait.experimental_benchmark import (
@@ -189,3 +190,132 @@ def test_run_single_pair_benchmark_continue_on_error(tmp_path, monkeypatch):
     df = pd.read_csv(out["summary_csv"])
     assert set(df["status"]) == {"ok", "error"}
     assert "bad detector" in " ".join(str(v) for v in df["error"].dropna().tolist())
+
+
+def test_manifest_serializes_numpy_and_path_config(tmp_path, monkeypatch):
+    """Issue #35: manifest must survive numpy scalars and Path in the config."""
+
+    def fake_extract(video_path, model, experimental, **kwargs):
+        return {
+            "meta": {"fps": 30.0, "n_frames": 2},
+            "frames": [{"frame_idx": 0, "landmarks": {}}, {"frame_idx": 1, "landmarks": {}}],
+            "extraction": {"model": model},
+            "extract_kwargs": kwargs,
+        }
+
+    def fake_normalize(data, **kwargs):
+        data["normalization"] = {"kwargs": kwargs}
+        return data
+
+    def fake_compute_angles(data, **kwargs):
+        data["angles"] = {"frames": [{"knee_L": 10.0}, {"knee_L": 12.0}]}
+        return data
+
+    def fake_detect_events(data, method):
+        data["events"] = {
+            "method": method,
+            "left_hs": [{"frame": 0}],
+            "right_hs": [],
+            "left_to": [],
+            "right_to": [],
+        }
+        return data
+
+    def fake_vicon(data, trial_dir, vicon_fps, max_lag_seconds):
+        data.setdefault("experimental", {})
+        data["experimental"]["vicon_benchmark"] = {"sync": {}, "metrics": {}}
+        return data
+
+    monkeypatch.setattr("myogait.experimental_benchmark.extract", fake_extract)
+    monkeypatch.setattr("myogait.experimental_benchmark.normalize", fake_normalize)
+    monkeypatch.setattr("myogait.experimental_benchmark.compute_angles", fake_compute_angles)
+    monkeypatch.setattr("myogait.experimental_benchmark.detect_events", fake_detect_events)
+    monkeypatch.setattr("myogait.experimental_benchmark.run_single_trial_vicon_benchmark", fake_vicon)
+
+    cfg = {
+        "models": ["mediapipe"],
+        "event_methods": ["zeni"],
+        "normalization_variants": [{"name": "none", "enabled": False, "kwargs": {}}],
+        "degradation_variants": [{"name": "none", "experimental": {"enabled": False}}],
+        # numpy scalars in the vicon sub-dict (as loaded from user configs)
+        "vicon": {
+            "vicon_fps": np.float64(200.0),
+            "max_lag_seconds": np.int64(10),
+        },
+        # pathlib.Path inside extract_kwargs
+        "extract_kwargs": {
+            "flip_if_right": True,
+            "calibration_dir": Path("data/calibration"),
+        },
+    }
+
+    out = run_single_pair_benchmark(
+        video_path=tmp_path / "video.mp4",
+        vicon_trial_dir=tmp_path / "vicon",
+        output_dir=tmp_path / "out",
+        benchmark_config=cfg,
+    )
+
+    assert out["n_runs"] >= 1
+    manifest_path = tmp_path / "out" / "benchmark_manifest.json"
+    assert manifest_path.exists()
+    with open(manifest_path, encoding="utf-8") as f:
+        manifest = json.load(f)  # must not raise TypeError
+    assert manifest["n_runs"] >= 1
+
+
+def test_run_single_pair_benchmark_surfaces_sync_error_diagnostic(tmp_path, monkeypatch):
+    from myogait.experimental_vicon import SyncError
+
+    def fake_extract(video_path, model, experimental, **kwargs):
+        return {
+            "meta": {"fps": 30.0, "n_frames": 3},
+            "frames": [{"frame_idx": i, "landmarks": {}} for i in range(3)],
+            "extraction": {"model": model},
+        }
+
+    def fake_compute_angles(data, **kwargs):
+        data["angles"] = {"frames": [{"knee_L": 10.0} for _ in range(3)]}
+        return data
+
+    def fake_detect_events(data, method):
+        data["events"] = {"left_hs": [{"frame": 1}], "right_hs": [], "left_to": [], "right_to": []}
+        return data
+
+    def fake_vicon(data, trial_dir, vicon_fps, max_lag_seconds):
+        raise SyncError(
+            "Not enough angle samples for synchronization "
+            "(knee_L=3, knee_R=0, hip_L=0, hip_R=0; need >= 10 on the best "
+            "candidate). Try a longer recording or check that compute_angles() "
+            "ran on the video side.",
+            candidates={"knee_L": 3, "knee_R": 0, "hip_L": 0, "hip_R": 0},
+            required=10,
+        )
+
+    monkeypatch.setattr("myogait.experimental_benchmark.extract", fake_extract)
+    monkeypatch.setattr("myogait.experimental_benchmark.compute_angles", fake_compute_angles)
+    monkeypatch.setattr("myogait.experimental_benchmark.detect_events", fake_detect_events)
+    monkeypatch.setattr("myogait.experimental_benchmark.run_single_trial_vicon_benchmark", fake_vicon)
+
+    cfg = {
+        "models": ["mediapipe"],
+        "event_methods": ["zeni"],
+        "normalization_variants": [{"name": "none", "enabled": False, "kwargs": {}}],
+        "degradation_variants": [{"name": "none", "experimental": {"enabled": False}}],
+        "continue_on_error": True,
+    }
+    out = run_single_pair_benchmark(
+        video_path=tmp_path / "video.mp4",
+        vicon_trial_dir=tmp_path / "vicon",
+        output_dir=tmp_path / "bench_sync_err",
+        benchmark_config=cfg,
+    )
+    assert out["n_runs"] == 1
+    assert out["n_ok"] == 0
+    assert out["n_error"] == 1
+
+    df = pd.read_csv(out["summary_csv"])
+    assert len(df) == 1
+    assert df.iloc[0]["status"] == "error"
+    assert "knee_L=3" in str(df.iloc[0]["error"])
+    assert df.iloc[0]["error_kind"] == "SyncError"

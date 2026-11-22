@@ -23,7 +23,7 @@ generate_longitudinal_report
 
 import logging
 from pathlib import Path
-from typing import List, Union
+from typing import List
 
 import numpy as np
 import matplotlib
@@ -462,7 +462,6 @@ def _page_trunk_pelvis(pdf, data: dict, s: dict):
     angles = data.get("angles", {})
     angle_frames = angles.get("frames", [])
     fps = data.get("meta", {}).get("fps", 30.0)
-    plane = data.get("meta", {}).get("plane", "sagittal")
     events = data.get("events", {})
 
     time = np.array([af["frame_idx"] / fps for af in angle_frames])
@@ -472,14 +471,12 @@ def _page_trunk_pelvis(pdf, data: dict, s: dict):
     pelvis = [v if v is not None else np.nan for v in pelvis]
 
     fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(_FIG_SIZE[0], 10))
-    plane_title = " (Coronal View)" if plane == "coronal" else " (Sagittal View)"
-    fig.suptitle(s["trunk_pelvis_title"] + plane_title, fontsize=14, fontweight="bold", y=0.99)
+    fig.suptitle(s["trunk_pelvis_title"], fontsize=14, fontweight="bold", y=0.99)
 
     # Trunk
     trunk_arr = np.array(trunk)
     valid_trunk = trunk_arr[~np.isnan(trunk_arr)]
-    trunk_label = "Trunk Sway (Coronal)" if plane == "coronal" else s["trunk"]
-    ax1.plot(time, trunk, color="#2171b5", linewidth=1.5, label=trunk_label)
+    ax1.plot(time, trunk, color="#2171b5", linewidth=1.5, label=s["trunk"])
     if len(valid_trunk) > 0:
         trunk_mean = np.mean(valid_trunk)
         trunk_std = np.std(valid_trunk)
@@ -514,18 +511,15 @@ def _page_trunk_pelvis(pdf, data: dict, s: dict):
     # Pelvis
     pelvis_arr = np.array(pelvis)
     valid_pelvis = pelvis_arr[~np.isnan(pelvis_arr)]
-    pelvis_label = "Pelvis List (Coronal)" if plane == "coronal" else s["pelvis_tilt"]
-    ax2.plot(time, pelvis, color="purple", linewidth=1.5, label=pelvis_label)
+    ax2.plot(time, pelvis, color="purple", linewidth=1.5, label=s["pelvis_tilt"])
     if len(valid_pelvis) > 0:
         pelvis_mean = np.mean(valid_pelvis)
-        pelvis_rom = np.ptp(valid_pelvis)
         ax2.axhline(pelvis_mean, color="red", linestyle="--", linewidth=1.5,
                      label=f"{s['mean']}: {pelvis_mean:.1f}\u00b0")
-        ax2.set_title(f"{pelvis_label} \u2014 ROM: {pelvis_rom:.1f}\u00b0  {s['mean']}: {pelvis_mean:.1f}\u00b0",
+        ax2.set_title(f"{s['pelvis_tilt']} \u2014 {s['mean']}: {pelvis_mean:.1f}\u00b0",
                        fontsize=10, fontweight="bold")
     else:
-        unavail_text = "Pelvis List — Not detected" if plane == "coronal" else "Pelvis Tilt — Requires Coronal View"
-        ax2.set_title(unavail_text, fontsize=10)
+        ax2.set_title(s["pelvis_unavailable"], fontsize=10)
     for hs in events.get("left_hs", []) + events.get("right_hs", []):
         ax2.axvline(hs["time"], color="green", alpha=0.2, linewidth=0.5)
     ax2.set_xlabel(s["time_s"])
@@ -533,7 +527,7 @@ def _page_trunk_pelvis(pdf, data: dict, s: dict):
     ax2.legend(fontsize=8)
     ax2.grid(True, alpha=0.3)
 
-    fig.tight_layout(rect=(0, 0, 1, 0.97))
+    fig.tight_layout(rect=[0, 0, 1, 0.97])
     pdf.savefig(fig, dpi=_DPI)
     plt.close(fig)
 
@@ -646,7 +640,7 @@ def _page_normalized_cycles(pdf, cycles: dict, side: str, data: dict, s: dict):
             ax.axvline(avg_to, color="orange", linestyle="--", linewidth=1.5,
                        alpha=0.7, label=f"TO ~{avg_to:.0f}%")
 
-    fig.tight_layout(rect=(0, 0, 1, 0.97))
+    fig.tight_layout(rect=[0, 0, 1, 0.97])
     pdf.savefig(fig, dpi=_DPI)
     plt.close(fig)
 
@@ -672,7 +666,7 @@ def _page_normative(pdf, cycles: dict, data: dict, s: dict):
     try:
         fig = plot_normative_comparison(data, cycles)
         fig.suptitle(s["normative_title"], fontsize=14, fontweight="bold", y=0.99)
-        fig.tight_layout(rect=(0, 0, 1, 0.97))
+        fig.tight_layout(rect=[0, 0, 1, 0.97])
         pdf.savefig(fig, dpi=_DPI)
         plt.close(fig)
     except Exception:
@@ -700,7 +694,7 @@ def _page_frontal(pdf, cycles: dict, data: dict, s: dict):
     try:
         fig = plot_normative_comparison(data, cycles, plane="frontal")
         fig.suptitle(title, fontsize=14, fontweight="bold", y=0.99)
-        fig.tight_layout(rect=(0, 0, 1, 0.97))
+        fig.tight_layout(rect=[0, 0, 1, 0.97])
         pdf.savefig(fig, dpi=_DPI)
         plt.close(fig)
     except Exception:
@@ -715,7 +709,7 @@ def _page_gvs(pdf, cycles: dict, data: dict, s: dict):
     try:
         fig = plot_gvs_profile(cycles)
         fig.suptitle(s["gvs_title"], fontsize=14, fontweight="bold", y=0.99)
-        fig.tight_layout(rect=(0, 0, 1, 0.97))
+        fig.tight_layout(rect=[0, 0, 1, 0.97])
         pdf.savefig(fig, dpi=_DPI)
         plt.close(fig)
     except Exception:
@@ -730,7 +724,7 @@ def _page_quality(pdf, data: dict, s: dict):
     try:
         fig = plot_quality_dashboard(data)
         fig.suptitle(s["quality_title"], fontsize=14, fontweight="bold", y=0.99)
-        fig.tight_layout(rect=(0, 0, 1, 0.97))
+        fig.tight_layout(rect=[0, 0, 1, 0.97])
         pdf.savefig(fig, dpi=_DPI)
         plt.close(fig)
     except Exception:
@@ -781,15 +775,6 @@ def _page_detailed_text(pdf, data: dict, cycles: dict, stats: dict, s: dict):
                 if m:
                     arr = np.array(m)
                     lines.append(f"    {joint.capitalize():8s}  {np.min(arr):6.1f} a {np.max(arr):6.1f}  (ROM: {np.ptp(arr):.1f})")
-        else:
-            angle_frames = data.get("angles", {}).get("frames", [])
-            lines.append(f"  {side_name}:")
-            for joint in ["hip", "knee", "ankle"]:
-                joint_key = f"{joint}_{'L' if side_key == 'left' else 'R'}"
-                vals = [af.get(joint_key) for af in angle_frames if af.get(joint_key) is not None and not np.isnan(af.get(joint_key))]
-                if vals:
-                    arr = np.array(vals)
-                    lines.append(f"    {joint.capitalize():8s}  {np.min(arr):6.1f} a {np.max(arr):6.1f}  (ROM: {np.ptp(arr):.1f})")
     lines.append("")
 
     lines.append(s["symmetry_header"])
@@ -825,7 +810,7 @@ def _page_detailed_text(pdf, data: dict, cycles: dict, stats: dict, s: dict):
             verticalalignment="top", fontfamily="monospace",
             bbox=dict(boxstyle="round", facecolor="wheat", alpha=0.3))
 
-    fig.tight_layout(rect=(0, 0, 1, 0.97))
+    fig.tight_layout(rect=[0, 0, 1, 0.97])
     pdf.savefig(fig, dpi=_DPI)
     plt.close(fig)
 
@@ -837,7 +822,7 @@ def generate_report(
     data: dict,
     cycles: dict,
     stats: dict,
-    output_path: Union[str, Path],
+    output_path: str,
     language: str = "fr",
 ) -> str:
     """Generate a multi-page PDF report.
@@ -912,7 +897,7 @@ def generate_report(
 
 def generate_longitudinal_report(
     sessions: List[dict],
-    output_path: Union[str, Path],
+    output_path: str,
     language: str = "fr",
 ) -> str:
     """Generate a multi-session comparison PDF report.
@@ -984,7 +969,7 @@ def generate_longitudinal_report(
         if handles:
             ax_legend.legend(handles, labels_list, loc="center", fontsize=9)
 
-        fig.tight_layout(rect=(0, 0, 1, 0.97))
+        fig.tight_layout(rect=[0, 0, 1, 0.97])
         pdf.savefig(fig, dpi=_DPI)
         plt.close(fig)
 
@@ -1023,7 +1008,7 @@ def generate_longitudinal_report(
             else:
                 cell.set_facecolor("#D9E2F3" if key[0] % 2 == 0 else "white")
 
-        fig.tight_layout(rect=(0, 0, 1, 0.97))
+        fig.tight_layout(rect=[0, 0, 1, 0.97])
         pdf.savefig(fig, dpi=_DPI)
         plt.close(fig)
 

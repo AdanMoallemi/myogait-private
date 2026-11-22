@@ -110,7 +110,7 @@ Usage:
 
     # Or call steps directly
     from myogait.normalize import filter_butterworth
-    df = filter_butterworth(df, cutoff=4.0, order=2, fs=30.0)
+    df = filter_butterworth(df, cutoff=8.0, order=2, fs=30.0)
 """
 
 import copy
@@ -119,6 +119,8 @@ from typing import Callable, Dict, List, Optional
 
 import numpy as np
 import pandas as pd
+
+from .axis_utils import safe_frame_rate
 
 
 logger = logging.getLogger(__name__)
@@ -179,7 +181,7 @@ def _apply_on_xy(df: pd.DataFrame, func) -> pd.DataFrame:
 
 def filter_butterworth(
     df: pd.DataFrame,
-    cutoff: float = 4.0,
+    cutoff: float = 8.0,
     order: int = 2,
     fs: float = 30.0,
     **kwargs,
@@ -1677,7 +1679,7 @@ def normalize(
     data: dict,
     filters: Optional[List[str]] = None,
     steps: Optional[List[dict]] = None,
-    butterworth_cutoff: float = 4.0,
+    butterworth_cutoff: float = 8.0,
     butterworth_order: int = 2,
     center: bool = False,
     align: bool = False,
@@ -1742,7 +1744,7 @@ def normalize(
     if not data.get("frames"):
         raise ValueError("No frames in data. Run extract() first.")
 
-    fps = data.get("meta", {}).get("fps", 30.0)
+    fps = safe_frame_rate(data)
 
     # Save raw frames on first call
     if "frames_raw" not in data:
@@ -2144,11 +2146,6 @@ def procrustes_align(
         """Center a shape by subtracting its centroid."""
         centroid = shape.mean(axis=0)
         return shape - centroid, centroid
-
-    def _centroid_size(shape):
-        """Compute centroid size: sqrt(sum of squared distances to centroid)."""
-        centered, _ = _center(shape)
-        return np.sqrt(np.sum(centered ** 2))
 
     def _align_to_reference(target, reference):
         """Align target shape to reference via Procrustes.

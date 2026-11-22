@@ -18,7 +18,10 @@ DEFAULT_CONFIG : dict
 """
 
 import json
+import copy
 import logging
+import os
+import tempfile
 from pathlib import Path
 from typing import Union
 
@@ -43,7 +46,7 @@ DEFAULT_CONFIG = {
     },
     "normalize": {
         "filters": ["butterworth"],
-        "butterworth_cutoff": 4.0,
+        "butterworth_cutoff": 8.0,
         "butterworth_order": 2,
         "center": False,
         "align": False,
@@ -51,7 +54,7 @@ DEFAULT_CONFIG = {
     },
     "angles": {
         "method": "sagittal_vertical_axis",
-        "correction_factor": 0.8,
+        "correction_factor": 1.0,
         "calibrate": True,
         "calibration_frames": 30,
     },
@@ -127,8 +130,8 @@ def load_config(path: Union[str, Path]) -> dict:
     if not isinstance(cfg, dict):
         raise ValueError("Config must be a dict")
 
-    # Merge with defaults
-    merged = _deep_merge(DEFAULT_CONFIG.copy(), cfg)
+    # Merge with defaults without retaining references to either input.
+    merged = deep_merge(DEFAULT_CONFIG, cfg)
     logger.info(f"Loaded config from {path}")
     return merged
 
@@ -160,24 +163,46 @@ def save_config(config: dict, path: Union[str, Path]) -> str:
     if suffix in (".yaml", ".yml"):
         try:
             import yaml
-            with open(path, "w", encoding="utf-8") as f:
-                yaml.dump(config, f, default_flow_style=False, sort_keys=False)
-        except ImportError:
-            raise ImportError("PyYAML required for YAML configs: pip install pyyaml")
+        except ImportError as exc:
+            raise ImportError("PyYAML required for YAML configs: pip install pyyaml") from exc
+        payload = yaml.safe_dump(config, default_flow_style=False, sort_keys=False)
     else:
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump(config, f, indent=2, ensure_ascii=False)
+        payload = json.dumps(config, indent=2, ensure_ascii=False)
 
-    logger.info(f"Saved config to {path}")
+    _write_text_atomic(path, payload)
+    logger.info("Saved config to %s", path)
     return str(path)
 
 
-def _deep_merge(base: dict, override: dict) -> dict:
-    """Recursively merge override into base."""
-    result = base.copy()
-    for k, v in override.items():
-        if k in result and isinstance(result[k], dict) and isinstance(v, dict):
-            result[k] = _deep_merge(result[k], v)
+def _write_text_atomic(path: Path, payload: str) -> None:
+    """Replace a configuration only after its complete payload is on disk."""
+    temporary: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w", encoding="utf-8", dir=path.parent,
+            prefix=f".{path.name}.", suffix=".tmp", delete=False,
+        ) as handle:
+            temporary = Path(handle.name)
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+        temporary.replace(path)
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
+
+
+def deep_merge(base: dict, override: dict) -> dict:
+    """Recursively merge mappings without sharing mutable input values."""
+    result = copy.deepcopy(base)
+    for key, value in override.items():
+        if isinstance(value, dict) and isinstance(result.get(key), dict):
+            result[key] = deep_merge(result[key], value)
         else:
-            result[k] = v
+            result[key] = copy.deepcopy(value)
     return result
+
+
+# Kept private as a compatibility alias for older internal callers.
+def _deep_merge(base: dict, override: dict) -> dict:
+    return deep_merge(base, override)

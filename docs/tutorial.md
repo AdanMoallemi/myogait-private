@@ -72,19 +72,36 @@ pip install myogait[all]
 
 ```python
 import myogait
-print(myogait.__version__)  # 0.3.0
-print(len(myogait.__all__))  # 90+ public functions
+print(myogait.__version__)  # 0.8.0
+print(len(myogait.__all__))  # 140+ public functions
 ```
 
 ---
 
 ## 2. Basic Pipeline
 
+### The One-Liner (recommended)
+
+For standard gait analysis, use the validated pipeline in a single call —
+it applies the benchmarked defaults and reports quality diagnostics:
+
+```python
+import myogait as mg
+
+result = mg.run_pipeline("walk.mp4", model="sapiens2-quick")
+print(result["stats"]["cadence"])
+for w in result["quality"]["warnings"]:
+    print("!", w)     # e.g. perspective distortion, too few cycles
+```
+
+The step-by-step version below is for when you need to customise a
+stage or understand what happens inside.
+
 The complete pipeline in 6 steps:
 
 ```python
 from myogait import (
-    extract, normalize, compute_angles,
+    extract, normalize, compute_angles, canonicalize_angle_signs,
     detect_events, segment_cycles, analyze_gait
 )
 
@@ -99,8 +116,13 @@ data = normalize(data, filters=["butterworth"])
 data = compute_angles(data)
 print(f"Angles: {list(data['angles']['frames'][0].keys())}")
 
+# Step 3b (recommended for comparison / longitudinal work):
+# force a flexion-positive convention independent of walking direction,
+# so two sessions — or a video vs a Vicon reference — never disagree in sign.
+data = canonicalize_angle_signs(data)
+
 # Step 4: Detect events (heel strike, toe off)
-data = detect_events(data, method="gk_bike")
+data = detect_events(data, method="zeni")
 n_hs = len(data["events"]["left_hs"]) + len(data["events"]["right_hs"])
 print(f"{n_hs} heel strikes detected")
 
@@ -142,7 +164,7 @@ data = {
 
 ## 3. Choosing a Pose Backend
 
-### Experimental Input Degradation (AIM Benchmark Only)
+### Experimental Input Degradation (robustness studies)
 
 Use this only for robustness benchmarking. By default, all values are neutral
 and no degradation is applied.
@@ -163,7 +185,7 @@ data = extract(
 )
 ```
 
-### Experimental VICON Alignment (AIM, Single Video)
+### Experimental VICON Alignment (Single Video)
 
 ```python
 from myogait import run_single_trial_vicon_benchmark
@@ -178,7 +200,7 @@ data = run_single_trial_vicon_benchmark(
 print(data["experimental"]["vicon_benchmark"]["metrics"].keys())
 ```
 
-### Experimental Single-Pair Benchmark Runner (AIM Only)
+### Experimental Single-Pair Benchmark Runner
 
 ```python
 from myogait import run_single_pair_benchmark
@@ -205,7 +227,7 @@ manifest = run_single_pair_benchmark(
 print(manifest["summary_csv"])
 ```
 
-This helper is experimental and should only be used for AIM benchmark studies.
+This helper is experimental and intended for validation studies against an optical reference.
 
 ### Quick Comparison
 
@@ -274,7 +296,7 @@ data = frame_coherence_score(data)
 
 # Per-frame scores [0, 1] in data["frames"][i]["coherence"]
 # Summary statistics in data["coherence_summary"]
-print(f"Mean coherence: {data['coherence_summary']['mean']:.3f}")
+print(f"Mean coherence: {data['coherence_summary']['mean_score']:.3f}")
 print(f"Low-quality frames: {data['coherence_summary']['low_coherence_frames']}")
 ```
 
@@ -366,6 +388,19 @@ from myogait import foot_progression_angle
 
 data = foot_progression_angle(data)
 ```
+
+### Advanced: Landmark Bias Calibration (experimental)
+
+The validated pipeline needs **no angle or landmark correction**: with
+a modern pose backbone it already matches optical motion capture (see
+the Validation section of the README). For weaker backbones, or setups
+where a per-patient optical reference session is available, an
+experimental phase-binned landmark calibration exists
+(`fit_landmark_bias_by_phase` → `merge_landmark_biases` →
+`smooth_landmark_bias` → `apply_landmark_bias_correction`); its
+docstrings carry the full workflow and the measured caveats. The
+legacy LASSO angle corrections are **deprecated** and will be removed
+in 1.0.
 
 ---
 
@@ -465,6 +500,32 @@ print(f"Stance %: {stats['stance_pct']:.1f}%")
 print(f"Symmetry index: {stats['symmetry_index']:.2f}")
 ```
 
+### Metric calibration — measured anthropometrics preferred over height
+
+Step length and walking speed rely on a pixel-to-meter reference to
+be reported in cm / m/s.  Four options, in order of preference:
+
+```python
+# 1. Best — measured femur AND foot, averaged for a tighter scale
+stats = analyze_gait(data, cycles, femur_mm=442, foot_mm=265)
+
+# 2. Femur alone (routine clinical measurement)
+stats = analyze_gait(data, cycles, femur_mm=442)
+
+# 3. Foot alone (heel to longest toe)
+stats = analyze_gait(data, cycles, foot_mm=265)
+
+# 4. Fallback — anthropometric estimate from body height
+stats = analyze_gait(data, cycles, height_m=1.68)
+```
+
+When both `femur_mm` and `foot_mm` are provided, the two independent
+pixel-to-meter scales are averaged.  Individual measurements take
+precedence over `height_m`.  When nothing is passed, step length and
+walking speed are reported in image-normalised units.  The same three
+parameters are also accepted by `step_length()` and `walking_speed()`
+when called directly.
+
 ### Advanced Parameters
 
 ```python
@@ -558,7 +619,7 @@ from myogait import movement_analysis_profile, plot_gvs_profile
 map_data = movement_analysis_profile(cycles)
 
 # Visualization
-fig = plot_gvs_profile(gvs)
+fig = plot_gvs_profile(cycles)
 fig.savefig("movement_analysis_profile.png", dpi=150)
 ```
 
@@ -917,8 +978,26 @@ export_csv(data, "./csv_output/", cycles, stats)
 from myogait import export_excel
 
 export_excel(data, "gait_analysis.xlsx", cycles, stats)
-# One sheet per data type
 ```
+
+Produces a multi-sheet workbook:
+
+- `Landmarks` — raw pose landmarks per frame
+- `Angles` — joint angles per frame
+- `Events` — HS / TO timestamps
+- `Cycles` — one row per cycle: side, start / end frame, duration,
+  stance / swing %
+- **`Biomarkers_per_cycle`** — one row per cycle with the full clinical
+  panel: ROM / min / max / mean per joint, peak angular velocity
+  (°/s), peak angular acceleration (°/s²), stance-only peaks,
+  swing-only peaks, foot drop (ankle at HS), stiff-knee marker (peak
+  knee flexion in swing), toe-clearance proxy (min ankle in swing)
+  and the swing-peak knee timing.  Makes per-cycle variability
+  directly readable, no post-processing needed.
+- `Summary_left` / `Summary_right` — normalised mean ± SD curves per
+  side (hip, knee, ankle, trunk)
+- `Stats` — flat spatiotemporal / symmetry / variability / pathology
+  section
 
 ### Pandas DataFrame
 
@@ -954,6 +1033,47 @@ from myogait import export_c3d
 
 # Requires: pip install myogait[c3d]
 export_c3d(data, "markers.c3d")
+```
+
+### Loading a C3D file (Vicon / OpenSim / any marker system)
+
+Any C3D file can be read into a myogait-compatible pivot dict with
+`load_c3d()`.  The marker-naming convention is autodetected among the
+registered families (Plug-in Gait, ISB, Helen Hayes, and their
+underscore variants); a regex-based fuzzy match on the raw labels is
+used as fallback when no registered convention matches.
+
+```python
+import myogait as mg
+
+data = mg.load_c3d("trial.c3d")               # autodetect
+print(data["extraction"]["c3d_convention"])   # e.g. 'plug_in_gait'
+print(data["extraction"]["c3d_convention_scores"])
+# → per-convention count of required lower-limb landmarks resolved
+
+# Then feed into the standard pipeline as if it were a video:
+data = mg.compute_angles(data)
+data = mg.detect_events(data)
+cycles = mg.segment_cycles(data)
+stats = mg.analyze_gait(data, cycles)
+```
+
+To inspect / extend the registry:
+
+```python
+list(mg.C3D_MARKER_CONVENTIONS.keys())
+# ['plug_in_gait', 'iso_biomechanics', 'helen_hayes', 'iso_biomechanics_underscore']
+
+# Custom lab convention
+mg.C3D_MARKER_CONVENTIONS["my_lab"] = {
+    "LEFT_HIP":  ["LabelForLeftHip"],
+    "LEFT_KNEE": ["LabelForLeftKnee"],
+    # ...
+}
+
+# Force a specific mapping (skips autodetect)
+data = mg.load_c3d("trial.c3d",
+                   marker_mapping=mg.C3D_MARKER_CONVENTIONS["my_lab"])
 ```
 
 ---
@@ -1073,6 +1193,10 @@ myogait extract walk.mp4 -m sapiens2-top --with-depth --with-seg
 ```bash
 myogait analyze result.json --csv --pdf --language fr
 ```
+
+If long recordings show a slow angular drift (hip angles sliding over the
+video), add the opt-in `--detrend` flag to remove it before analysis — see
+the "Sagittal drift correction" section of the README for the caveats.
 
 ### Batch Processing
 

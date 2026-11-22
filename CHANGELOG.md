@@ -1,0 +1,552 @@
+# Changelog
+
+All notable changes to myogait are documented here. The project follows
+semantic versioning: breaking API changes only occur in major releases.
+
+## [0.11.0] — 2026-11-12
+
+### Changed
+- `myogait.kinetics.estimate_kinetics()`: the antero-posterior GRF now uses the
+  DAMP moment law about a point h above the CoM (`damp_ap_force()`), which
+  replaces the virtual pivot point of 0.10: a learnt offset of the line of
+  action from the heel position and foot pitch, and a 15 ms onset lag after
+  heel strike. Default heights 0.40 m (fixed camera or markers) and 0.50 m
+  (moving camera). Against force plates and inverse dynamics (BioCV fixed
+  camera, Myokinesis hand-held phone), median hip-moment RMSE 0.40 -> 0.28
+  (fixed camera), 0.35 -> 0.23 (phone, healthy), 0.39 -> 0.31 (phone, NMD)
+  N·m/kg; knee 0.25 -> 0.19 N·m/kg (fixed camera); AP GRF 4.1 -> 3.9 %BW.
+
+### Added
+- `damp_ap_force()`, `DAMP_COEFS` (coefficients per height, fitted on force
+  plates of healthy younger and older adults), `AP_HEIGHT_FIXED_M`,
+  `AP_HEIGHT_MOVING_M`, `DAMP_LAG_S`.
+- `estimate_kinetics(ap_law="vpp")` restores the 0.10 virtual pivot;
+  `ap_height_m` sets h (`vpp_height_m` kept as an alias).
+
+## [0.10.1] — 2026-11-09
+
+### Fixed
+- Release blocked: `myogait/kinetics.py` and its tests failed the lint step
+  of the CI and release workflows (ruff E,W,F), so 0.10.0 never reached
+  PyPI. Formatting only, no behaviour change. 0.10.1 is the first published
+  version with the kinetics module (contents of 0.10.0 below).
+
+## [0.10.0] — 2026-11-07 (tagged, not published on PyPI)
+
+### Added
+- `myogait.kinetics.walking_speed_metric()`: walking speed from metric 2-D
+  landmarks, also for a hand-held panning camera (pelvis velocity relative
+  to the slower, stance foot); `estimate_kinetics()` now reports
+  `walking_speed_m_s` for moving cameras too. Accuracy is limited by the
+  metric scale (femur or height reference) and by depth changes of a
+  hand-held camera: on 37 Myokinesis smartphone walks the error versus
+  Vicon was +18 % median (IQR +4 to +23 %), with 2 failures; treat it as
+  indicative.
+- `myogait.kinetics` / `estimate_kinetics()`: markerless sagittal kinetics
+  without force plates — per-foot vertical and antero-posterior ground
+  reaction forces, centre of pressure, ankle / knee / hip internal moments
+  and ankle power, from a pivot (pose video or marker trajectories) and the
+  subject's mass and height. Chain: whole-body CoM (de Leva) and Newton's
+  law; cubic double-support load transfer learnt on force plates; virtual
+  pivot point for the antero-posterior force; foot-rotation centre-of-pressure model (FR-COP)
+  driven by three foot rotations (invariant to marker / keypoint placement
+  and to vertical camera motion); pose ankle keypoint moved to the anatomical
+  joint centre along the foot; 2-D inverse dynamics. Validated against force
+  plates on 12 datasets (healthy and pathological gait) and on fixed-camera
+  and hand-held smartphone video.
+- `detect_camera_motion()`: cheap fixed-vs-moving camera test from the
+  background optical flow (one frame in five), and
+  `background_vertical_shift()`: vertical camera stabilisation from the
+  static background (~6 ms per frame), used by `estimate_kinetics()` when a
+  video path is given. `estimate_kinetics()` also reports the walking speed
+  (fixed camera).
+- Constants of `myogait.kinetics` aligned with the article (double-support cubic and
+  foot-rotation COP coefficients fitted on the force-plate datasets without video,
+  virtual pivot 0.40 m fixed camera / 0.30 m moving camera, ankle relocation
+  0.335 / 0.365, kinematic event bias −40 / +15 ms); new `vpp_height_m` argument.
+
+## [0.9.4] — 2026-10-29
+
+### Added
+- `reject_outlier_cycles(cycles, k=2.5)`: drops cycles whose hip, knee or
+  ankle curve is far from the per-side median curve (robust z-score of the
+  RMS distance above `k`; sides with at least 5 cycles). Applied by default
+  in `run_pipeline` / `run_auto` after the direction filter
+  (`outlier_rejection=False` disables it); the count is reported in
+  `quality["n_cycles_dropped_outlier"]` and in the warnings. Cycles recorded
+  while the subject enters or leaves the field of view have a much more
+  variable push-off (timing SD about 3x, amplitude SD about 2x) and flattened
+  the mean ankle curve. Full `run_auto` on 15 Myokinesis clinic subjects
+  (hand-held phone, subject entering and leaving the frame), vs markers:
+  ankle range-of-motion error −5.7 → −3.1°, ankle shape RMSE 2.0 → 1.5°,
+  knee range-of-motion error −2.2 → −1.3°. Short lab trials (fewer than 5
+  cycles per side) are unaffected.
+- `summarize_cycles(cycles)`: per-side mean/SD curves of a cycle list.
+
+### Fixed
+- `filter_cycles_by_direction` returned the summary (mean/SD curves) of all
+  cycles, including the dropped return-pass ones; the summary is now
+  recomputed on the kept cycles, and `data["cycles_data"]` follows.
+
+## [0.9.3] — 2026-10-29
+
+Better default kinematics: the ankle push-off and knee swing peaks are no
+longer flattened.
+
+### Changed
+- Default landmark Butterworth cutoff 8 Hz (was 4 Hz) in `normalize`,
+  `run_pipeline`, `run_auto`, the CLI and `DEFAULT_CONFIG`.
+- Default `compute_angles(correction_factor=1.0)` (was 0.8). The 0.8 factor
+  assumed that 2-D video over-estimates range of motion; against marker-based
+  capture (BioCV, Myokinesis) the opposite was measured. Together the two old
+  defaults under-estimated knee and ankle range of motion by about 10-17° and
+  flattened the ankle push-off (about 7°) and knee swing peaks (about 10°).
+  With the new defaults (9 BioCV subjects, markers computed independently):
+  shape RMSE hip/knee/ankle 2.9/2.9/1.8°, range-of-motion error
+  −3.5/−7.7/+0.8°. Events and cadence are unchanged (64 clinic walks:
+  cadence bias −0.65 vs −0.62 steps/min, 758 vs 759 cycles).
+- README and `validation/`: figure and kinematic results updated.
+
+### Deprecated
+- `restore_ankle_dynamics` (and `analyze_gait(restore_ankle_dynamics=True)`):
+  it compensated the former defaults and over-corrects with the new ones.
+
+### Notes
+- Results computed with earlier versions are not directly comparable for
+  range of motion and peaks; re-process recordings to compare.
+
+### Fixed
+- `canonicalize_angle_signs` could invert the hip of a correctly oriented
+  side when the hip carries a large negative offset (trunk lean / pelvic
+  tilt, e.g. some neuromuscular patients): its check required the hip to be
+  flexed at the swing knee-flexion peak. The hip is now checked against the
+  forward inclination of the thigh (walking direction read from the foot,
+  valid with a panning camera and on return passes), which does not depend
+  on any offset. On 97 BioCV and Myokinesis recordings processed step by
+  step, inverted hip cycles went from 40/1002 to 0/1002.
+
+## [0.9.2] — 2026-10-24
+
+Fixes the units of the landmark positions handed to gaitkit for non-square
+videos (heel/toe-based gaitkit detectors were broken since the pixel-space
+angle correction) and the `c3d` packaging extra.
+
+### Fixed
+- The `c3d` extra required `ezc3d>=2.0`, a version that does not exist on
+  PyPI (latest 1.7.x), so `pip install "myogait[c3d]"` failed; it now
+  requires `ezc3d>=1.5`.
+- `compute_angles` stored the hip/knee/ankle `landmark_positions` of the angle
+  frames in pixel space when it pixel-scaled non-square images, whereas
+  `_convert_to_gaitkit_frames` completes heel and toe from `data["frames"]` in
+  normalised units; gaitkit detectors using heel/toe received mixed units
+  (BIKE F1 about 0.9 -> 0.1 on 1920x1080 Sapiens 2 video). Positions are now
+  taken from the unscaled frame; angles are unchanged.
+
+## [0.9.1] — 2026-10-07
+
+Fixes an inverted hip sign that `run_auto` (0.9.0) could produce on
+single-direction recordings; documentation and example fixes.
+
+### Added
+- `examples/quickstart.py`: one-command analysis of a video (MediaPipe on CPU
+  by default) or of a pre-extracted pivot; README Quick Start now starts on
+  CPU, Sapiens 2 being the GPU option.
+
+### Fixed
+- `run_auto` (0.9.0) could return a hip curve with the wrong sign on one side
+  for single-direction recordings: the flexion-positive check only ran inside
+  the direction filter. It now always runs; it is exposed as
+  `enforce_flexion_positive`. Found on a marker (C3D) trial whose raw 2-D left
+  hip was inverted (video vs marker hip r went from -1.00 to 1.00).
+- `run_pipeline` / `run_auto` no longer suggest neutral calibration when it
+  was already applied.
+- Normative curves: the adult hip, knee, ankle and sagittal-pelvis curves are
+  now credited to their real source, the BioCV dataset (Evans et al. 2024),
+  in the code and in the `source` field returned for each curve (it named
+  the textbooks used only for the trunk and frontal-plane curves).
+
+## [0.9.0] — 2026-10-07
+
+Automatic recipe choice, a public API for the companion application, and the
+validation material and community files for publication.
+
+### Added
+- `run_auto(source, ...)` and `detect_recipe(data)` (`myogait.autoconfig`): pick
+  the processing recipe from the recording itself — default recipe for a clean
+  standing-start clip, the validated overground recipe (calibration off,
+  standstill kept) for a marker source, a mid-stride start or a there-and-back
+  walkway (with direction filtering) — and fall back once to the overground
+  recipe if no gait cycle is found. The same detection now drives myogait-app.
+- `filter_cycles_by_direction` is now public (the private
+  `_filter_cycles_by_direction` name is kept as an alias).
+- `validation/`: code, aggregate results and figures of the validation against
+  marker-based capture (BioCV laboratory dataset, Qualisys).
+- `CONTRIBUTING.md`, `CODE_OF_CONDUCT.md`, `CITATION.cff`.
+
+### Changed
+- Bath BioCV is attributed to Evans et al. 2024 (it was credited to "Cotton
+  et al." in the C3D marker-preset comment).
+- README: statement of need, link to myogait-app, updated validation section
+  (numbers from `validation/`), citation with the Zenodo DOI.
+
+## [0.8.9] — 2026-09-03
+
+Fix a metric step/stride/speed over-estimation on subject-following (panning)
+videos.
+
+### Fixed
+- `step_length` / `walking_speed`: the pixel-to-metre scale was calibrated from
+  the **first 60 frames only**. On a tracking/panning shot the subject is often
+  still entering the frame there (far, small), so the femur/foot reference was
+  under-measured and the scale inflated — step, stride and speed came out
+  **~1.5× too long** vs a marker-based reference on subject-following
+  recordings. The scale now takes the **median over the whole recording**, which
+  is robust to entry/exit frames and matches the reference within ~10 %.
+  Fixed-camera recordings, where the subject is full-size throughout, are
+  unchanged. Regression test: `tests/test_scale_calibration_window.py`.
+
+## [0.8.8] — 2026-09-01
+
+User-friendly, one-shot install of the MMPose backend (HRNet-W48, RTMPose-m).
+
+### Added
+- `myogait setup-mmpose`: installs the full OpenMMLab stack in one command via
+  `mim` (`mmengine` + `mmcv` + `mmdet` + `mmpose`). `mim` fetches the prebuilt
+  `mmcv` wheel matching the *installed* torch + CUDA automatically — the step
+  that fails under plain `pip` on Windows (no source build, wrong wheel picked;
+  see issues #4/#5). Checks that torch is present first, pip-installs `openmim`
+  if missing, then verifies the import chain. Flags: `--mmcv/--mmdet/--mmpose`
+  to pin versions, `--no-install`.
+
+### Changed
+- HRNet / MMPose backends now point to `myogait setup-mmpose` in their
+  missing-dependency errors, instead of the fragile manual `pip install`.
+
+## [0.8.7] — 2026-08-28
+
+Editable pivot metadata: subject/study can now be written and round-tripped
+via the library directly, not only from the app's session config.
+
+### Added
+- `set_study(data, patient_id=, run=, group=, condition=, **extra)`: writes and
+  *merges* study identifiers into `data["study"]` (editing one field, e.g.
+  `condition`, leaves the others intact). Exported at the package top level.
+- `set_subject` now persists the measured segment lengths — `femur_length_mm`,
+  `tibia_length_mm`, `upper_arm_length_mm`, `forearm_length_mm`,
+  `trunk_length_mm`, `foot_length_mm` (see `SUBJECT_SEGMENT_FIELDS`) — alongside
+  the demographics, so the anthropometry that calibrates step length / walking
+  speed travels with the pivot. Backward-compatible: unset segments stay absent,
+  and `load_json` still requires only `meta`+`frames`, so old pivots load
+  unchanged.
+
+## [0.8.6] — 2026-08-28
+
+Feature release: calibrated restoration of the markerless ankle push-off.
+
+### Added
+- `restore_ankle_dynamics(cycles)` and the `ankle_dynamics` module. A 2-D
+  pose estimator behaves, on a joint-angle waveform, like a subject-
+  independent low-pass filter (it keeps ~80 % of the signal at 1 Hz but only
+  ~20 % at 6-7 Hz), so the fast push-off plantar-flexion is flattened and the
+  ankle range of motion is systematically under-read. We model the estimator
+  as a linear time-invariant system, estimate its transfer function ``H(f)``
+  once against synchronous Vicon (BioCV / Bath BATH-01258, 9 subjects,
+  85 trials, embedded in the module) and invert it by Wiener deconvolution.
+  The correction is applied as **mean restoration**: because deconvolution is
+  linear, only the systematic mean cycle is deconvolved and the resulting
+  per-phase delta is added to every cycle, so inter-cycle variability is left
+  exactly unchanged. Validated leave-one-subject-out: ankle ROM bias
+  -10.6 -> -5.3 deg, |ROM error| 10.8 -> 6.7 deg, inter-cycle SD unchanged;
+  it improves every subject and restores inter-patient variability toward the
+  optical reference. The filter is applied in Hz (cadence-adaptive), so it
+  makes no healthy-gait assumption and is safe on pathological gait.
+- `analyze_gait(..., restore_ankle_dynamics=False)`: opt-in flag that applies
+  the correction to a copy of the cycles before computing the statistics.
+- `reconstruct_isb_angles(data, joints=...)` and the `isb` module: hip, knee
+  and ankle recomputed from C3D markers using proper ISB anatomical segment
+  frames (pelvis, thigh, shank, foot; Wu et al. 2002), instead of the single
+  averaged joint centre `compute_angles` works from. The 2-D sagittal angle
+  references flexion to the trunk (shoulder->hip) whereas ISB references the
+  pelvis: a real anatomical difference that leaves a ~10-17 deg constant
+  offset on hip/knee against a Visual3D/Vicon reference. Tier 1 (direct, no
+  calibration file) needs the paired medial/lateral markers and raises
+  `InsufficientLandmarksForISBError` otherwise, so sparse/markerless sources
+  fall back cleanly to the sagittal method. Characterised across Bath BioCV
+  (356 trial x joint x side): a clean, subject-specific level shift, waveform
+  r = 0.975 preserved. Also exposes the abduction/adduction and rotation DOF.
+- `reconstruct_isb_angles_tier2/tier3` and `load_raw_c3d_markers`
+  (`vicon_calibration` module): Harrington-regression and VSK-calibrated hip
+  joint centres for the ISB reconstruction, and every raw C3D marker by its
+  original label.
+
+### Changed
+- Walking-direction detection now takes a majority vote across four
+  body-orientation cues (hip displacement plus three pan-invariant
+  intra-frame offsets: foot-vs-hip, nose-vs-hip, toe-vs-heel), instead of the
+  hip-displacement heuristic alone. The single cue collapses to landmark
+  noise when the camera pans to follow the subject; the intra-frame cues do
+  not. Angle-sign results are unchanged wherever `canonicalize_angle_signs`
+  runs (the reported ankle metric is invariant to the direction stage,
+  verified by a landmark-mirroring test to within 1 deg).
+
+## [0.8.5] — 2026-08-27
+
+Bug-fix release: correct metric spatiotemporal parameters on a C3D marker
+source, and finish the walking-direction robustness work. Validated on the
+Bath BioCV dataset (markerless video vs Vicon C3D) and a panning-camera
+clip.
+
+### Fixed
+- `step_length` / `walking_speed` on a **C3D pivot**: step, stride and speed
+  are now read directly from the real 3-D markers (``c3d_markers_3d``, in mm)
+  instead of the pixel-to-metre scale path. A C3D pivot's 2-D landmark
+  projection squashes the real-world capture volume anisotropically into the
+  image box, so a femur/height pixel scale (derived from the vertical femur)
+  did not apply to the horizontal step and produced values ~100x too large
+  (e.g. 82 m steps, 168 m/s). Markerless-video vs Vicon-C3D walking speed now
+  agree to ~0.1% on Bath BioCV (both 1.35 m/s).
+- Walking-direction detection falls back to a displacement heuristic when the
+  feet are missing/occluded, instead of silently defaulting to
+  left-to-right. `detect_walking_direction_from_feet` gained a ``default``
+  parameter (``"right"`` for backward compatibility; the event detectors pass
+  ``"unknown"`` to trigger the pelvis/ankle-displacement fallback). Previously
+  a right-to-left walk with occluded feet had its heel-strike and toe-off
+  events swapped.
+- `toe_clearance`: minimum toe clearance is now referenced against the toe
+  marker's own vertical floor (not the heel's) and searched over mid-swing
+  only. It previously mixed the heel ground with the toe marker and included
+  the toe-off / terminal-swing ground contacts, so the MTC came out ≈0 or
+  slightly negative; it is now the physiological mid-swing clearance (~1–2 cm).
+- Dropped Python 3.9 from the supported set (``requires-python >= 3.10``): it
+  reached end-of-life in Oct 2025 and the numeric dependency floors no longer
+  install on it.
+
+### Added
+- App (`myogait_app`): the pipeline now drops the against-direction cycle
+  group on a there-and-back walkway (``CyclesConfig.filter_direction``,
+  enabled automatically by ``autoconfig.detect_config`` on a detected
+  reversal), matching library ``run_pipeline`` behaviour. The mirrored
+  return-pass cycles no longer pollute the ROM / symmetry averages.
+
+## [0.8.4] — 2026-08-27
+
+Bug-fix release: a codebase-wide audit for the same defect classes behind
+the 0.8.3 fix — positional frame indexing, camera-motion-corrupted
+metrics, and inconsistent calibration flags.
+
+### Fixed
+- `stride_variability`: step-length CV now measures the same-frame
+  inter-ankle separation resolved through the frame-index map, instead of
+  a single ankle's cross-frame displacement read positionally. The old
+  formulation was corrupted both by the frame-index mismatch (analysed
+  window starting late / shorter than the source) and by a tracking
+  camera, producing impossible CVs (>100%); it now returns
+  physiologically plausible values.
+- `toe_clearance`: read the correct cycle key (`toe_off_frame`, not the
+  non-existent `to_frame`) and resolve cycle frames through the
+  frame-index map. Every minimum-toe-clearance value was previously
+  `None` because the swing loop never ran.
+- `to_opensim_mot` (`.mot` export): pelvis translations are read through
+  a frame-index → position map; positional indexing corrupted every
+  translation row when the analysed window did not start at frame 0.
+- `detect_parkinsonian`, `harmonic_ratio`, `postural_sway`: reformulated
+  to pelvis-relative (same-frame) quantities so a tracking/panning camera
+  can no longer distort them. In particular the parkinsonian "short
+  stride" screen used the absolute ankle-x range, which a panning camera
+  collapses toward zero — falsely flagging a healthy subject; it now uses
+  the ankle excursion relative to the pelvis and is camera-motion immune.
+- `step_length` / `walking_speed` / `analyze_gait`: anthropometric
+  references (height, femur, foot) are resolved once and back-filled from
+  the pivot's `subject` block consistently, so the two functions can no
+  longer disagree on whether a trial is calibrated (metres vs normalised
+  units).
+- `detect_events` / `normalize`: acquisition rate is sanitised via a
+  shared `safe_frame_rate`, so a malformed `meta.fps` (`0`, negative,
+  `None`, or non-numeric) no longer raises `ZeroDivisionError` / crashes
+  or silently yields zero cycles.
+- `trim_standstill`: read the event `frame` key (events are still in
+  array-index space at this stage) instead of the non-existent
+  `frame_idx` / `index` keys, which collapsed every event to index 0 and
+  silently trimmed the entire gait bout to zero cycles on any clip that
+  began with the subject standing still.
+
+### Added
+- `analyze_gait` populates `stats["warnings"]`: physiological plausibility
+  guards on metric step/stride/speed record any breach machine-readably
+  and set `valid_for_progression = False`, so a grossly mis-scaled
+  calibration can no longer be read as trustworthy.
+
+## [0.8.3] — 2026-08-27
+
+Bug-fix release: make spatiotemporal metrics reliable under a tracking
+(panning) camera.
+
+### Fixed
+- `step_length` / `walking_speed`: step length is now the antero-posterior
+  separation between the two ankles *within* the heel-strike frame, stride
+  is the sum of the two step lengths, and speed is step × cadence. A
+  subject-following/panning camera is optically identical to a treadmill —
+  it cancels the forward image translation and corrupts every cross-frame
+  displacement metric — so the previous single-ankle progression
+  under-estimated step, stride and speed several-fold. The new
+  formulation is same-frame / event-timing based and therefore immune to
+  camera panning, validated across walking direction, pan sign, and
+  there-and-back trials.
+- Event/cycle frames are resolved through a frame-index → array-position
+  map, fixing wrong-frame reads and silently dropped heel strikes when the
+  analysed window does not start at video frame 0.
+
+## [0.8.2] — 2026-08-25
+
+Bug-fix release: correct spatial scaling of gait distances.
+
+### Fixed
+- `step_length` / `walking_speed`: distances are now de-normalised to
+  source pixels before the anthropometric scale is applied. Landmarks
+  are normalised per axis (`x / width`, `y / height`), so on a
+  non-square frame one x-unit and one y-unit span different real
+  distances. The metric scale is derived mostly from the (vertical)
+  femur but a step is a (horizontal) antero-posterior distance, so the
+  previous code under-estimated step/stride length by roughly the image
+  aspect ratio on landscape footage (e.g. ~1.78× on 16:9). The scale is
+  now isotropic (metres per source pixel), fixing step length, stride
+  length and walking speed. When frame dimensions are unavailable the
+  behaviour is unchanged (unit scale).
+
+## [0.8.1] — 2026-08-21
+
+Technical release: post-audit hardening and documentation pass.
+
+### Added
+- `available_models()` — non-destructive backend discovery via
+  `importlib.util.find_spec` (including secondary requirements), so a
+  UI can grey out unavailable backends without importing anything.
+- `myogait.exceptions` — dedicated error hierarchy (`MyogaitError`
+  root) that also inherits the historical builtins, so existing
+  `except ValueError` handlers keep working. Adopted at the
+  unreadable-video and missing-backend sites.
+- `segment_cycles(min_confidence=…, min_coherence=…)` — optional
+  per-cycle quality gates on landmark confidence / frame coherence;
+  rejections reported in `summary["n_rejected_quality"]`.
+- `femur_ratio` parameter on `analyze_gait`, `step_length` and
+  `walking_speed` (defaults to the documented `FEMUR_HEIGHT_RATIO`).
+- CI: `backend-mediapipe` job running a real end-to-end extraction,
+  so the badge finally covers an actual pose backend.
+
+### Changed
+- `ensure_xpu_torch()` is strictly opt-in: by default it only warns
+  with the manual install command; the pip-reinstall + process-restart
+  path requires `auto_upgrade=True` or `MYOGAIT_AUTO_XPU=1`.
+- GPU extractors explicitly release CUDA/XPU cached memory in
+  `teardown()` (`BasePoseExtractor.release_gpu_memory()`).
+- README: validation figure (video vs optical capture, three healthy
+  adults) and feature list regrouped by theme; tutorial trimmed of
+  deprecated workflows.
+
+## [0.8.0] — 2026-08-21
+
+The accuracy & validation release. Every change below came out of a
+systematic benchmarking campaign against marker-based optical motion
+capture (two laboratories, two camera types, two pose-model
+generations, healthy adults and neuromuscular patients — see the
+Validation section of the README).
+
+### Added
+- `run_pipeline()` — the validated end-to-end pipeline in one call
+  (video, `.myogait.json`, or `.c3d` input), with built-in quality
+  diagnostics: tracking coverage, out-of-sagittal-plane distortion,
+  standing-prelude detection, direction-inconsistent cycle counts,
+  implausible ankle range. Warnings are returned and logged instead of
+  failing silently.
+- `canonicalize_angle_signs()` — enforces a flexion-positive sagittal
+  convention independent of walking direction, with the hip verified
+  against the knee-flexion peak. Without it, two recordings of the
+  same subject walking in opposite directions (or a video and a C3D
+  reference) can disagree in sign.
+- `compute_c3d_reference_angles()` — recomputes the ankle of a C3D
+  reference directly from the 3-D marker positions. The sagittal 2-D
+  projection is faithful for hip and knee (r ≥ 0.99 vs a Vicon 3-D
+  model) but collapses the ankle (r ≈ 0.4, ROM halved); the 3-D ankle
+  restores r = 0.99.
+- Landmark bias-correction family (experimental):
+  `fit_landmark_bias_by_phase`, `merge_landmark_biases`,
+  `smooth_landmark_bias`, `apply_landmark_bias_correction` —
+  phase-binned, walking-direction-aware landmark calibration against
+  an optical reference. Benchmarks show the *uncorrected* pipeline is
+  already at reference level with a strong pose backbone; reserve
+  these for weak backbones or per-patient calibration setups (see
+  docstrings for measured caveats).
+- `bath_biocv` C3D marker convention; convention autodetection
+  covers Plug-in Gait, ISB medial+lateral, Helen Hayes, underscore
+  variants, and BioCV-style explicit labels.
+- Per-cycle biomarker sheet in `export_excel`.
+- `calibration_max_offset_deg` guard in `compute_angles` (default
+  25°): neutral calibration is skipped, with a warning, when the
+  "neutral" window clearly caught mid-gait motion — previously this
+  silently shifted the ankle by tens of degrees on clips that start
+  mid-stride.
+
+### Changed / Deprecated (following an independent two-track audit)
+- **LASSO bias corrections deprecated** (`apply_hip/knee/ankle_bias_correction`,
+  removal planned for 1.0) with an *executable* guardrail: every call
+  now emits a `DeprecationWarning` stating the healthy-adult prior
+  (n ≤ 12 training subjects) and the benchmark result that the raw
+  pipeline outperforms the corrected one with modern pose models. The
+  protection is no longer documentation-only.
+- **`pelvis_obliquity`** exposed: the historical `pelvis_tilt` key
+  actually measures frontal-plane pelvic obliquity, not sagittal tilt.
+  The honest name now carries the same value; the legacy key remains
+  for compatibility and will be redefined in 1.0.
+- **`FEMUR_HEIGHT_RATIO`** (0.245) promoted to a documented, sourced
+  (Winter 2009) and overridable module constant, with an explicit
+  caveat for neuromuscular populations; used by the height-based
+  metric scaling fallback.
+- **CMC (Kadaba 1989)** added to the Vicon benchmark angle metrics —
+  the standard waveform-similarity index of the gait literature.
+- **Empirical normative curves.** The adult sagittal reference curves
+  (hip, knee, ankle, pelvis) are now empirical mean ± SD waveforms
+  derived from an instrumented optical motion-capture dataset of
+  healthy adults, replacing curves digitised from textbook figures.
+  Per-phase SD replaces the previous constant bands.
+- `ROADMAP.md` added: audit items not addressed in this release
+  (pathological event detection, cycle-quality gating, pediatric
+  norms, GDI-2D concordance, engineering hardening for long-lived
+  services) are tracked there.
+
+### Fixed
+- **Shared-config mutation bug.** `load_config` merged user configs
+  onto a *shallow* copy of `DEFAULT_CONFIG`: any sub-dict not
+  overridden stayed shared, so mutating one loaded config silently
+  corrupted the process-wide defaults. Now deep-copied.
+- **`load_c3d` isotropic normalisation (critical).** Each axis was
+  normalised by its own range, so a 6 m walkway × 2 m height scene
+  squashed the walking axis ~3:1 and every joint angle computed from
+  the projection was geometrically wrong (hip ROM collapsed to ~6°,
+  ankle inflated to ~90°). Any benchmark run against `load_c3d`
+  output on a non-square scene should be re-run.
+- **`load_c3d` occlusion handling.** ezc3d encodes missing samples as
+  exact `(0,0,0)`, which corrupted the normalisation bounds; they are
+  now treated as NaN.
+- Walking-direction-dependent hip/knee sign inversions (see
+  `canonicalize_angle_signs` above).
+- Hip sign convention now flexion-positive (was extension-positive:
+  signed r = −1.0 against a Vicon 3-D reference).
+
+### Validation
+- Sagittal waveforms vs optical capture: r = 0.99 (hip) / 0.98 (knee)
+  / 0.90 (ankle); curve RMSE 2.4–4.0° after zero-offset removal.
+- Spatiotemporal: stride-time bias 0.00 ± 0.03 s; cadence 0.9 ± 3.3
+  steps/min; stance 0.5 ± 2.4 %.
+- Peak knee angular velocity: ≈ 1 % bias.
+- Repeatability supports MDC < 5° on hip/knee parameters from ~5–10
+  averaged cycles.
+
+## [0.7.0] — 2026-08-20
+- `femur_mm` / `foot_mm` metric scaling for step length and speed.
+- C3D marker-convention autodetection (`detect_c3d_convention`).
+- Per-cycle biomarkers in Excel export.
+- `apply_linear_detrend` for slow sagittal drift.
+- Hip inversion fix on flipped videos; `min_cycle_duration` fix.
+
+## [0.6.x] and earlier
+See the git history.

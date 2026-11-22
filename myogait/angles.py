@@ -31,12 +31,13 @@ References for conventions:
     2002;35(4):543-548. doi:10.1016/S0021-9290(01)00222-6
 
 Correction factor:
-    The default correction_factor=0.8 compensates for 2D projection
-    overestimation of sagittal-plane joint ROM.
-    Ref: Mündermann L, Corazza S, Andriacchi TP. The evolution of
-    methods for the capture of human movement leading to markerless
-    motion capture for biomechanical applications. J Neuroeng Rehabil.
-    2006;3:6. doi:10.1186/1743-0003-3-6
+    ``correction_factor`` multiplies the hip, knee and ankle angles. It
+    defaults to 1.0 (no scaling) since 0.9.3.  The former default (0.8),
+    meant to offset an assumed 2-D over-estimation of range of motion, was
+    measured against marker-based capture (BioCV, Myokinesis) to do the
+    opposite: together with a 4 Hz landmark filter it under-estimated knee
+    and ankle range of motion by about 10-17 degrees and flattened the
+    ankle push-off and knee swing peaks.
 """
 
 import copy
@@ -89,25 +90,40 @@ def _trunk_angle(left_shoulder: np.ndarray, right_shoulder: np.ndarray,
     return angle if trunk[0] > 0 else -angle
 
 
-def _pelvis_tilt(left_hip, right_hip, trunk_length=None, is_coronal: bool = False) -> float:
-    """Compute pelvis inclination/tilt from hip landmark positions.
+def _pelvis_tilt(
+    left_hip: np.ndarray,
+    right_hip: np.ndarray,
+    trunk_length: Optional[float] = None,
+) -> float:
+    """Pelvis tilt. Positive = right side up.
 
-    In coronal (frontal) view, computes pelvic list (lateral tilt/drop)
-    between left and right hips relative to horizontal.
-    In sagittal (side) view, returns NaN if 2D hip overlap obscures tilt.
+    Returns NaN in lateral view (hips overlap).
+
+    When ``trunk_length`` is provided (distance from shoulder center to
+    hip center), "overlap" is detected as a ratio: hip distance below
+    5 % of trunk length. This reference is large in any standing or
+    walking posture even when both shoulders and hips are seen edge-on
+    (lateral view), so the threshold stays meaningful in both normalised
+    [0, 1] and pixel coordinate spaces.
+
+    When ``trunk_length`` is ``None`` (legacy call), fall back to the
+    historical 2 %-of-normalised-space absolute threshold (only correct
+    when landmarks are in [0, 1]).
     """
     pelvis = right_hip - left_hip
     dist = float(np.linalg.norm(pelvis))
-    if not is_coronal:
-        if trunk_length is not None and trunk_length > 0:
-            if dist < 0.45 * trunk_length:
-                return np.nan
-        else:
-            if dist < 0.15:
-                return np.nan
-    elif dist < 0.001:
-        return np.nan
-
+    if trunk_length is not None and trunk_length > 0:
+        # Empirical threshold: in a genuine coronal (frontal) view the
+        # pelvis-width / trunk-length ratio is typically 0.5-0.7.  In a
+        # sagittal view the ratio is 0.1-0.4 depending on the 2D vs 3D-
+        # aware backbone (Sapiens 2 reports ~0.35-0.40 because it knows
+        # about the near/far hip offset in the walking direction).  A
+        # 0.45 cut cleanly separates the two.
+        if dist < 0.45 * trunk_length:
+            return np.nan
+    else:
+        if dist < 0.15:
+            return np.nan
     horizontal = np.array([1.0, 0.0])
     angle = _angle_between(horizontal, pelvis)
     return angle if pelvis[1] < 0 else -angle
@@ -352,6 +368,18 @@ def _detect_walking_direction(data: dict) -> str:
         ``"left_to_right"`` or ``"right_to_left"``. Defaults to
         ``"left_to_right"`` if no signal can be computed.
     """
+    # If extract() already mirrored the frames so the subject walks
+    # left-to-right (``flip_if_right=True``, the default), the landmarks
+    # we see here are in left-to-right coordinate space *by
+    # construction*.  Re-detecting the direction from those already-
+    # mirrored coordinates can vote right_to_left (asymmetric noise on
+    # the 4 signals) and trigger a *second* mirror at lines below —
+    # both the "hip sign flipped in the PDF" and the "cycles look
+    # strange when the subject walks right-to-left" issues trace back to
+    # this double correction.  Trust the flip flag; skip re-detection.
+    if data.get("extraction", {}).get("was_flipped") is True:
+        return "left_to_right"
+
     frames = data.get("frames", [])
     if len(frames) < 2:
         return "left_to_right"
@@ -450,8 +478,12 @@ def _extract_landmark_positions(frame: dict) -> dict:
 # ── Method: sagittal_vertical_axis (default) ────────────────────────
 
 
-def _method_sagittal_vertical_axis(frame: dict, model: str, is_coronal: bool = False) -> dict:
-    """Sagittal vertical-axis method (ISB convention)."""
+def _method_sagittal_vertical_axis(frame: dict, model: str) -> dict:
+    """Vertical-axis reference method (gaitopensim).
+
+    Hip angle = atan2(thigh_from_vertical) - atan2(trunk_from_vertical).
+    Natural 0° in standing posture, no discontinuities.
+    """
     needs_foot = model != "mediapipe"
     f = _estimate_foot_landmarks(frame) if needs_foot else frame
     result = {"frame_idx": frame["frame_idx"]}
@@ -467,7 +499,7 @@ def _method_sagittal_vertical_axis(frame: dict, model: str, is_coronal: bool = F
         trunk_vec = hip_center - shoulder_center
         trunk_length = float(np.linalg.norm(trunk_vec))
         result["trunk_angle"] = _trunk_angle(l_shoulder, r_shoulder, l_hip, r_hip)
-        result["pelvis_tilt"] = _pelvis_tilt(l_hip, r_hip, trunk_length, is_coronal=is_coronal)
+        result["pelvis_tilt"] = _pelvis_tilt(l_hip, r_hip, trunk_length)
     else:
         trunk_vec = None
         result["trunk_angle"] = np.nan
@@ -533,7 +565,7 @@ def _method_sagittal_vertical_axis(frame: dict, model: str, is_coronal: bool = F
 # ── Method: sagittal_classic ─────────────────────────────────────────
 
 
-def _method_sagittal_classic(frame: dict, model: str, is_coronal: bool = False) -> dict:
+def _method_sagittal_classic(frame: dict, model: str) -> dict:
     """Classical 3-point interior angle method.
 
     Hip = 180 - angle(shoulder-hip-knee). 0° = aligned, positive = flexion.
@@ -556,7 +588,7 @@ def _method_sagittal_classic(frame: dict, model: str, is_coronal: bool = False) 
         hip_center = (l_hip + r_hip) / 2
         trunk_length = float(np.linalg.norm(hip_center - shoulder_center))
         result["trunk_angle"] = _trunk_angle(l_shoulder, r_shoulder, l_hip, r_hip)
-        result["pelvis_tilt"] = _pelvis_tilt(l_hip, r_hip, trunk_length, is_coronal=is_coronal)
+        result["pelvis_tilt"] = _pelvis_tilt(l_hip, r_hip, trunk_length)
     else:
         result["trunk_angle"] = np.nan
         result["pelvis_tilt"] = np.nan
@@ -689,7 +721,7 @@ def _correct_ankle_projection(
             heel = _get_xy(f, f"{prefix}_HEEL")
             foot = _get_foot_index_from_toes(f, prefix)
 
-            if knee is None or ankle is None or heel is None or foot is None:
+            if any(v is None for v in [knee, ankle, heel, foot]):
                 t_values.append(np.nan)
                 raw_angles.append(np.nan)
                 flat_mask.append(False)
@@ -783,7 +815,7 @@ def list_angle_methods() -> list:
 def compute_angles(
     data: dict,
     method: str = "sagittal_vertical_axis",
-    correction_factor: float = 0.8,
+    correction_factor: float = 1.0,
     calibrate: bool = True,
     calibration_frames: int = 30,
     calibration_joints: Optional[list] = None,
@@ -792,6 +824,7 @@ def compute_angles(
     apply_aspect_ratio: bool = True,
     calibration_dynamic_fallback: bool = True,
     calibration_min_std_deg: float = 1.0,
+    calibration_max_offset_deg: float = 25.0,
 ) -> dict:
     """Compute joint angles and add to pivot JSON.
 
@@ -828,6 +861,15 @@ def compute_angles(
         calibration window.  Below this threshold, the window is
         considered static and ``calibration_dynamic_fallback`` kicks
         in (default 1.0°).
+    calibration_max_offset_deg : float, optional
+        Maximum plausible magnitude for a neutral-calibration offset
+        (default 25.0°).  If the estimated offset for a joint exceeds
+        this, the "neutral" reference window almost certainly caught
+        mid-gait motion rather than a standing pose (common for
+        walkway clips that start mid-stride); the calibration is then
+        skipped for that joint to avoid shifting its curve into a
+        non-physiological range.  Set to ``float("inf")`` to disable
+        the guard.
     min_confidence : float, optional
         Skip angle computation on frames with confidence below this
         threshold (default 0.0, i.e. compute on all frames).  Skipped
@@ -924,8 +966,14 @@ def compute_angles(
             n_skipped += 1
         else:
             scaled_frame = _pixelify_frame(frame, width, height) if needs_scale else frame
-            is_coronal = (meta.get("plane") == "coronal")
-            angle_frames.append(method_func(scaled_frame, model, is_coronal=is_coronal))
+            af = method_func(scaled_frame, model)
+            if needs_scale:
+                # Angles are computed in pixel space, but the landmark positions handed to
+                # gaitkit must stay in the units of data["frames"]: _convert_to_gaitkit_frames
+                # completes them (heel, toe) from those frames, and mixing pixel and
+                # normalised coordinates corrupts every heel/toe-based detector.
+                af["landmark_positions"] = _extract_landmark_positions(frame)
+            angle_frames.append(af)
     if n_skipped:
         logger.info("Skipped %d/%d low-confidence frames (< %.2f)",
                      n_skipped, len(data["frames"]), min_confidence)
@@ -990,6 +1038,13 @@ def compute_angles(
     pelvis_unwrapped = _unwrap_angles(pelvis_vals)
     for af, v in zip(angle_frames, pelvis_unwrapped):
         af["pelvis_tilt"] = v
+        # Honest naming: the historical "pelvis_tilt" key actually
+        # measures FRONTAL-plane pelvic obliquity (inter-hip line vs
+        # horizontal), not the antero-posterior sagittal tilt.  Expose
+        # the same value under its correct name; the legacy key is kept
+        # for backward compatibility and slated for redefinition in 1.0.
+        # (True sagittal tilt is available via _pelvis_sagittal_tilt.)
+        af["pelvis_obliquity"] = v
 
     # Neutral calibration
     if calibrate and len(angle_frames) >= calibration_frames:
@@ -1030,6 +1085,23 @@ def compute_angles(
             else:
                 continue
 
+            # Sanity guard: neutral calibration assumes the reference
+            # window is a near-neutral pose, so its offset should be
+            # small.  A large offset means the "neutral" window actually
+            # caught mid-gait motion (e.g. a walkway clip that starts
+            # mid-stride with no standing prelude) — subtracting it would
+            # shift the whole joint curve by tens of degrees into a
+            # non-physiological range.  Skip calibration for that joint
+            # rather than corrupt it.
+            if abs(offset) > calibration_max_offset_deg:
+                logger.warning(
+                    "calibration: %s offset %.1f° exceeds %.1f° — no "
+                    "reliable neutral pose (clip likely starts mid-gait); "
+                    "leaving %s uncalibrated.",
+                    key, offset, calibration_max_offset_deg, key,
+                )
+                continue
+
             for af in angle_frames:
                 v = af.get(key)
                 if v is not None and not np.isnan(v):
@@ -1052,11 +1124,150 @@ def compute_angles(
         "ankle_sliding_correction": correct_ankle_sliding,
         "walking_direction": walking_direction,
         "joints": ["hip_L", "hip_R", "knee_L", "knee_R", "ankle_L", "ankle_R"],
-        "extra": ["trunk_angle", "pelvis_tilt"],
+        "extra": ["trunk_angle", "pelvis_tilt", "pelvis_obliquity"],
         "frames": angle_frames,
     }
 
     return data
+
+
+def canonicalize_angle_signs(data: dict) -> dict:
+    """Force a flexion-positive sagittal convention, direction-independent.
+
+    The sign of the 2-D hip and knee flexion angles produced by
+    :func:`compute_angles` depends on the detected walking direction:
+    a subject walking left-to-right and the same subject walking
+    right-to-left come out with opposite signs, and a Vicon C3D (whose
+    direction is inferred from marker geometry) can disagree in sign
+    with a video of the same gait.  This is harmless for a single
+    recording but breaks any comparison — video vs Vicon, left vs
+    right pass, or two sessions of one patient.
+
+    This helper re-anchors the convention on physiology, per side:
+
+    1. **Knee**: knee flexion is always positive and large in swing
+       (mean sagittal knee angle over a walking trial is reliably
+       positive, ~+15-25°).  If the mean knee angle is negative, the
+       side's hip and knee signs are flipped together.
+    2. **Hip**: verified independently of any offset: the hip angle
+       must increase when the thigh swings forward (knee ahead of the
+       hip along the walking direction, read from the foot so that a
+       panning camera or a return pass does not fool it).  If the two
+       are anti-correlated, the hip alone is flipped.  When the feet are
+       not available, the older check is used: at the swing knee-flexion
+       peak the hip must be flexed.
+       This catches the case where the raw 2-D hip convention comes
+       out extension-positive (measured at signed r = −1.0 against a
+       Vicon 3-D biomechanical model) even when the knee is already
+       correct.
+
+    The ankle is left untouched — it carries its own dual-method
+    calibration and its sign is already physiologically anchored.
+
+    Operates in place on ``data["angles"]["frames"]`` and returns
+    ``data``.  Safe to call more than once (idempotent once the signs
+    are correct).  Recommended as the last step of the angle pipeline
+    for any comparison or longitudinal use.
+    """
+    af = data.get("angles", {}).get("frames")
+    if not af:
+        return data
+    # One canonicalisation per compute_angles run.  On there-and-back
+    # recordings the return-pass frames keep an anti-phase hip after the
+    # per-side flip, which can make the hip criterion re-trigger on a
+    # second call; the flag (cleared whenever compute_angles rebuilds
+    # data["angles"]) makes the operation idempotent by construction.
+    if data["angles"].get("sign_canonicalized"):
+        return data
+    data["angles"]["sign_canonicalized"] = True
+
+    def _vals(key):
+        return [(i, f[key]) for i, f in enumerate(af)
+                if f.get(key) is not None
+                and not (isinstance(f[key], float) and np.isnan(f[key]))]
+
+    def _flip(key):
+        for f in af:
+            v = f.get(key)
+            if v is not None and not (isinstance(v, float) and np.isnan(v)):
+                f[key] = -v
+
+    for side in ("L", "R"):
+        knee = _vals(f"knee_{side}")
+        if not knee:
+            continue
+        if np.mean([v for _, v in knee]) < 0:
+            _flip(f"knee_{side}")
+            _flip(f"hip_{side}")
+            knee = [(i, -v) for i, v in knee]
+
+        # Hip orientation.  Primary criterion, independent of any constant
+        # offset: the hip flexes when the thigh swings forward, so the hip
+        # angle must correlate positively with the forward inclination of
+        # the thigh (knee ahead of the hip along the walking direction).
+        # The walking direction is read per frame from the foot (toe ahead
+        # of heel), which stays valid when the camera pans with the subject
+        # and on there-and-back passes.  Fallback (no foot / too few
+        # frames): the hip must be flexed at the swing knee-flexion peak.
+        hip = dict(_vals(f"hip_{side}"))
+        if not hip:
+            continue
+        r = _hip_thigh_correlation(data, af, side, hip)
+        if r is not None:
+            if r < 0:
+                _flip(f"hip_{side}")
+            continue
+        knee_sorted = sorted(knee, key=lambda t: -t[1])
+        top = knee_sorted[:max(5, len(knee_sorted) // 10)]
+        hip_at_peak = [hip[i] for i, _ in top if i in hip]
+        if hip_at_peak and np.mean(hip_at_peak) < 0:
+            _flip(f"hip_{side}")
+    return data
+
+
+def _hip_thigh_correlation(data: dict, af: list, side: str, hip: dict,
+                           min_frames: int = 30) -> Optional[float]:
+    """Correlation between the (sign-ambiguous) hip angle of *side* and the
+    forward inclination of its thigh, or None when it cannot be measured.
+
+    Forward = the walking direction, taken per frame from the foot (toe
+    ahead of the heel, rolling median over about one second).
+    """
+    S = "LEFT" if side == "L" else "RIGHT"
+    frames = data.get("frames") or []
+    by_idx = {f.get("frame_idx", i): f for i, f in enumerate(frames)}
+    fps = float((data.get("meta") or {}).get("fps") or 30.0)
+    xs_h, xs_k, foot, hv = [], [], [], []
+    for i, a in enumerate(af):
+        if i not in hip:
+            continue
+        fr = by_idx.get(a.get("frame_idx"))
+        if fr is None:
+            continue
+        h, k = _get_xy(fr, f"{S}_HIP"), _get_xy(fr, f"{S}_KNEE")
+        heel = _get_xy(fr, f"{S}_HEEL")
+        toe = _get_xy(fr, f"{S}_BIG_TOE")
+        if toe is None:
+            toe = _get_xy(fr, f"{S}_FOOT_INDEX")
+        if h is None or k is None or heel is None or toe is None:
+            continue
+        xs_h.append(float(h[0]))
+        xs_k.append(float(k[0]))
+        foot.append(float(toe[0]) - float(heel[0]))
+        hv.append(hip[i])
+    if len(hv) < min_frames:
+        return None
+    foot = np.asarray(foot)
+    win = max(5, int(round(fps)))
+    pad = win // 2
+    padded = np.pad(foot, pad, mode="edge")
+    d = np.sign(np.array([np.median(padded[j:j + win]) for j in range(len(foot))]))
+    thigh_fwd = d * (np.asarray(xs_k) - np.asarray(xs_h))
+    hv = np.asarray(hv, float)
+    ok = (d != 0) & np.isfinite(thigh_fwd) & np.isfinite(hv)
+    if ok.sum() < min_frames or np.std(thigh_fwd[ok]) == 0 or np.std(hv[ok]) == 0:
+        return None
+    return float(np.corrcoef(hv[ok], thigh_fwd[ok])[0, 1])
 
 
 # ── Ankle swap detection (dual-method) ───────────────────────────────
@@ -1252,26 +1463,26 @@ def detect_ankle_swap(
 
     # Method B is always computable (does not need ANKLE)
     angle_B = ankle_angle_method_B(knee, heel, foot)
-    result["angle_method_B"] = angle_B
+    result["angle_method_B"] = float(angle_B)
 
     if ankle is None:
         # ANKLE missing entirely — use Method B
-        result["corrected_angle"] = angle_B
+        result["corrected_angle"] = float(angle_B)
         return result
 
     angle_A = ankle_angle_method_A(knee, ankle, heel, foot)
-    result["angle_method_A"] = angle_A
+    result["angle_method_A"] = float(angle_A)
 
     if np.isnan(angle_A) or np.isnan(angle_B):
-        result["corrected_angle"] = angle_B if not np.isnan(angle_B) else angle_A
+        result["corrected_angle"] = float(angle_B) if not np.isnan(angle_B) else float(angle_A)
         return result
 
     delta = abs(angle_A - angle_B)
-    result["delta_deg"] = delta
+    result["delta_deg"] = float(delta)
 
     if delta > threshold_deg:
         result["swapped"] = True
-        result["corrected_angle"] = angle_B
+        result["corrected_angle"] = float(angle_B)
         logger.warning(
             "Ankle swap detected on %s (frame %s): "
             "Method A=%.1f deg, Method B=%.1f deg, delta=%.1f deg > %.1f deg threshold. "
@@ -1284,7 +1495,7 @@ def detect_ankle_swap(
             threshold_deg,
         )
     else:
-        result["corrected_angle"] = angle_A
+        result["corrected_angle"] = float(angle_A)
 
     return result
 
@@ -1391,15 +1602,7 @@ def _head_angle(frame: dict) -> float:
     l_hip = _get_xy(frame, "LEFT_HIP")
     r_hip = _get_xy(frame, "RIGHT_HIP")
 
-    if (
-        nose is None
-        or l_ear is None
-        or r_ear is None
-        or l_shoulder is None
-        or r_shoulder is None
-        or l_hip is None
-        or r_hip is None
-    ):
+    if any(v is None for v in [nose, l_ear, r_ear, l_shoulder, r_shoulder, l_hip, r_hip]):
         return np.nan
 
     ear_mid = (l_ear + r_ear) / 2
@@ -1501,7 +1704,7 @@ def _pelvis_sagittal_tilt(frame: dict) -> float:
     l_shoulder = _get_xy(frame, "LEFT_SHOULDER")
     r_shoulder = _get_xy(frame, "RIGHT_SHOULDER")
 
-    if l_hip is None or r_hip is None or l_shoulder is None or r_shoulder is None:
+    if any(v is None for v in [l_hip, r_hip, l_shoulder, r_shoulder]):
         return np.nan
 
     hip_center = (l_hip + r_hip) / 2
@@ -1570,7 +1773,7 @@ def _depth_enhanced_angles(frame: dict) -> Optional[dict]:
                 correction = min(correction, 2.0)
             else:
                 correction = 1.0
-            result[f"hip_{side}_correction"] = correction
+            result[f"hip_{side}_correction"] = float(correction)
         else:
             result[f"hip_{side}_correction"] = 1.0
 
@@ -1584,7 +1787,7 @@ def _depth_enhanced_angles(frame: dict) -> Optional[dict]:
                 correction = min(seg_3d / seg_2d, 2.0)
             else:
                 correction = 1.0
-            result[f"knee_{side}_correction"] = correction
+            result[f"knee_{side}_correction"] = float(correction)
         else:
             result[f"knee_{side}_correction"] = 1.0
 
@@ -1600,7 +1803,7 @@ def _depth_enhanced_angles(frame: dict) -> Optional[dict]:
                     correction = min(seg_3d / seg_2d, 2.0)
                 else:
                     correction = 1.0
-                result[f"ankle_{side}_correction"] = correction
+                result[f"ankle_{side}_correction"] = float(correction)
             else:
                 result[f"ankle_{side}_correction"] = 1.0
         else:
@@ -1678,7 +1881,7 @@ def compute_frontal_angles(data: dict) -> dict:
                 frontal_vec = np.array([dx, dz])
                 vertical = np.array([0.0, 1.0])
                 angle = _angle_between(frontal_vec, vertical)
-                result[f"hip_abduction_{side}"] = angle
+                result[f"hip_abduction_{side}"] = float(angle)
             else:
                 result[f"hip_abduction_{side}"] = None
 
@@ -1694,7 +1897,7 @@ def compute_frontal_angles(data: dict) -> dict:
                 v1 = np.array([v1_x, v1_z])
                 v2 = np.array([v2_x, v2_z])
                 angle = 180.0 - _angle_between(v1, v2)
-                result[f"knee_valgus_{side}"] = angle
+                result[f"knee_valgus_{side}"] = float(angle)
             else:
                 result[f"knee_valgus_{side}"] = None
 

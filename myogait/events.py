@@ -40,7 +40,7 @@ from typing import Callable, Dict, List, Optional
 import numpy as np
 from scipy.signal import find_peaks, butter, filtfilt
 
-from .axis_utils import detect_walking_direction_from_feet
+from .axis_utils import detect_walking_direction_from_feet, safe_frame_rate
 
 logger = logging.getLogger(__name__)
 
@@ -115,6 +115,27 @@ def _lowpass_filter(signal_arr: np.ndarray, cutoff: float, fs: float,
     return filtfilt(b, a, signal_arr)
 
 
+def _resolve_walking_right(current_data, displacement_fallback) -> bool:
+    """Return ``True`` when the subject walks left→right.
+
+    Foot orientation (toe vs heel) is the primary, treadmill-robust cue, but
+    it needs the toe and heel landmarks. When those are missing or occluded
+    the foot detector cannot tell and previously defaulted to "right",
+    silently swapping heel-strike and toe-off on a genuine right-to-left walk.
+    We now detect "unknown" in that case and fall back to a
+    displacement heuristic (net pelvis/ankle travel), which still gives the
+    correct direction whenever there is any forward progression in-frame.
+    """
+    direction = "unknown"
+    if current_data is not None:
+        direction = detect_walking_direction_from_feet(current_data, default="unknown")
+    if direction == "right":
+        return True
+    if direction == "left":
+        return False
+    return bool(displacement_fallback())
+
+
 def _detect_zeni(
     frames: list,
     fps: float,
@@ -144,13 +165,13 @@ def _detect_zeni(
     # Detect walking direction from foot orientation (toe vs heel).
     # This is more robust than displacement-based detection and
     # works on treadmills.
-    if _current_data is not None:
-        walking_right = detect_walking_direction_from_feet(_current_data) == "right"
-    else:
-        # Fallback: pelvis displacement
+    def _pelvis_disp():
+        # Fallback: net pelvis displacement over the clip.
         valid_pelvis = pelvis_x[~np.isnan(pelvis_x)]
-        walking_right = (valid_pelvis[-1] > valid_pelvis[0]
-                         if len(valid_pelvis) >= 2 else True)
+        return (valid_pelvis[-1] > valid_pelvis[0]
+                if len(valid_pelvis) >= 2 else True)
+
+    walking_right = _resolve_walking_right(_current_data, _pelvis_disp)
 
     # Relative ankle position
     left_ankle_rel = left_ankle_x - pelvis_x
@@ -241,12 +262,13 @@ def _detect_crossing(
     left_ankle_x = _lowpass_filter(left_ankle_x, cutoff_freq, fps)
     right_ankle_x = _lowpass_filter(right_ankle_x, cutoff_freq, fps)
 
-    # Detect walking direction from foot orientation
-    if _current_data is not None:
-        walking_right = detect_walking_direction_from_feet(_current_data) == "right"
-    else:
+    # Detect walking direction from foot orientation (fall back to net ankle
+    # displacement when the feet are missing/occluded).
+    def _ankle_disp():
         valid_la = left_ankle_x[~np.isnan(left_ankle_x)]
-        walking_right = len(valid_la) >= 2 and valid_la[-1] > valid_la[0]
+        return len(valid_la) >= 2 and valid_la[-1] > valid_la[0]
+
+    walking_right = _resolve_walking_right(_current_data, _ankle_disp)
 
     # Compute crossing signal (difference between left and right knee x)
     # Flip for right-to-left walking so rising crossing always = left forward
@@ -392,12 +414,13 @@ def _detect_oconnor(
 
     pelvis_x = (left_hip_x + right_hip_x) / 2
 
-    # Detect walking direction from foot orientation
-    if _current_data is not None:
-        walking_right = detect_walking_direction_from_feet(_current_data) == "right"
-    else:
+    # Detect walking direction from foot orientation (fall back to net pelvis
+    # displacement when the feet are missing/occluded).
+    def _pelvis_disp():
         valid_pelvis = pelvis_x[~np.isnan(pelvis_x)]
-        walking_right = len(valid_pelvis) >= 2 and valid_pelvis[-1] > valid_pelvis[0]
+        return len(valid_pelvis) >= 2 and valid_pelvis[-1] > valid_pelvis[0]
+
+    walking_right = _resolve_walking_right(_current_data, _pelvis_disp)
 
     results = {}
     for side, heel_name in [("left", "LEFT_HEEL"), ("right", "RIGHT_HEEL")]:
@@ -496,7 +519,7 @@ def event_consensus(
     if methods is None:
         methods = ["zeni", "oconnor", "crossing"]
 
-    fps = data.get("meta", {}).get("fps", 30.0)
+    fps = safe_frame_rate(data)
     frames = data["frames"]
 
     # Collect events from each method
@@ -628,7 +651,7 @@ def validate_events(data: dict) -> dict:
             "n_valid_cycles_right": 0,
         }
 
-    fps = events.get("fps", data.get("meta", {}).get("fps", 30.0))
+    fps = events.get("fps") or safe_frame_rate(data)
 
     for side in ["left", "right"]:
         hs_list = events.get(f"{side}_hs", [])
@@ -968,6 +991,31 @@ def _gaitkit_result_to_myogait(gk_result, fps: float) -> Dict[str, list]:
     return result
 
 
+_ONNX_GAITKIT_METHODS = frozenset({"intellevent", "deepevent"})
+
+
+def _wrap_onnx_import_error(method: str, exc: BaseException) -> BaseException:
+    """Return a friendlier ImportError when a gaitkit ONNX detector
+    fails because onnxruntime is missing (issue #41).
+
+    Leaves other errors untouched.
+    """
+    if (isinstance(exc, ImportError)
+            and method in _ONNX_GAITKIT_METHODS
+            and "onnxruntime" in (str(exc) or "").lower()):
+        return ImportError(
+            f"gaitkit method '{method}' needs onnxruntime, which is not "
+            f"installed.  Install it with:\n"
+            f"    pip install onnxruntime\n"
+            f"or, on Windows / cross-platform:\n"
+            f"    pip install onnxruntime-directml\n"
+            f"then re-run.  Other event detectors (zeni, gk_bike, "
+            f"gk_zeni, gk_oconnor, gk_ensemble) do not need onnxruntime "
+            f"and work out of the box."
+        )
+    return exc
+
+
 def _detect_gaitkit(
     data: dict,
     fps: float,
@@ -997,7 +1045,10 @@ def _detect_gaitkit(
     """
     gaitkit = _import_gaitkit()
     gk_frames = _convert_to_gaitkit_frames(data, femur_length_mm=femur_length_mm)
-    gk_result = gaitkit.detect(gk_frames, method=method, fps=fps, **kwargs)
+    try:
+        gk_result = gaitkit.detect(gk_frames, method=method, fps=fps, **kwargs)
+    except ImportError as e:
+        raise _wrap_onnx_import_error(method, e) from e
     return _gaitkit_result_to_myogait(gk_result, fps)
 
 
@@ -1410,7 +1461,7 @@ def detect_events(
     if not data.get("frames"):
         raise ValueError("No frames in data. Run extract() first.")
 
-    fps = data.get("meta", {}).get("fps", 30.0)
+    fps = safe_frame_rate(data)
     frames = data["frames"]
 
     # Adaptive parameter tuning based on estimated walking speed
@@ -1458,8 +1509,18 @@ def detect_events(
                 continue
             kept = []
             for ev_idx in lst:
-                idx = int(ev_idx) if not isinstance(ev_idx, dict) else int(
-                    ev_idx.get("frame_idx", ev_idx.get("index", 0)))
+                # Events at this stage are still in array-index space (before
+                # ``_remap_event_frames``), keyed ``"frame"`` by every detector
+                # (Zeni/crossing/velocity). Reading ``frame_idx``/``index`` --
+                # keys that never exist here -- collapsed every event to index 0,
+                # so a clip that begins with the subject standing still had
+                # ``mask[0] == False`` decide *all* events and silently trimmed
+                # the entire gait bout to zero cycles.
+                if isinstance(ev_idx, dict):
+                    idx = int(ev_idx.get(
+                        "frame", ev_idx.get("frame_idx", ev_idx.get("index", 0))))
+                else:
+                    idx = int(ev_idx)
                 if 0 <= idx < len(mask) and mask[idx]:
                     kept.append(ev_idx)
                 else:

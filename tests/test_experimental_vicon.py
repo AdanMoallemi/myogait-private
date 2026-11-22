@@ -103,3 +103,39 @@ def test_attach_experimental_block():
     assert "experimental" in out
     assert "vicon_benchmark" in out["experimental"]
     assert out["experimental"]["vicon_benchmark"]["status"] == "experimental"
+
+
+def test_sync_candidates_constant_includes_hips():
+    from myogait.experimental_vicon import _SYNC_CANDIDATE_JOINTS, _MIN_SYNC_SAMPLES
+    assert _SYNC_CANDIDATE_JOINTS[:2] == ("knee_L", "knee_R")  # knees first (best signal)
+    assert "hip_L" in _SYNC_CANDIDATE_JOINTS and "hip_R" in _SYNC_CANDIDATE_JOINTS
+    assert isinstance(_MIN_SYNC_SAMPLES, int) and _MIN_SYNC_SAMPLES >= 10
+
+
+def test_best_sync_falls_back_to_hip_when_knees_missing():
+    from myogait.experimental_vicon import _best_sync_signal
+    mg = {"hip_L": np.zeros(50)}
+    vc = {"hip_L": np.zeros(50), "knee_L": np.zeros(60)}
+    name, a, b = _best_sync_signal(mg, vc)
+    assert name == "hip_L"
+    assert len(a) == 50
+
+
+def test_insufficient_samples_raises_syncerror_with_diagnostic():
+    from myogait.experimental_vicon import SyncError, estimate_vicon_offset_seconds
+    mg = {"meta": {"fps": 30.0}, "angles": {"frames": [
+        {"knee_L": 1.0, "knee_R": 1.0, "hip_L": 0.0, "hip_R": 0.0}
+        for _ in range(3)]}}
+    vc = {"meta": {"fps": 200.0, "n_frames": 400}, "angles": {
+        "knee_L": np.zeros(400), "knee_R": np.zeros(400),
+        "hip_L": np.zeros(400), "hip_R": np.zeros(400)}}
+    with pytest.raises(SyncError) as exc_info:
+        estimate_vicon_offset_seconds(mg, vc)
+    err = exc_info.value
+    assert err.required == 10
+    assert err.candidates["knee_L"] == 3
+    assert err.candidates["hip_L"] == 3
+    msg = str(err)
+    assert "Not enough angle samples" in msg
+    assert "knee_L=3" in msg
+    assert "longer recording" in msg

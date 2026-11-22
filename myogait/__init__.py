@@ -19,7 +19,7 @@ Full pipeline with cycle analysis::
 
 from importlib import import_module
 
-__version__ = "0.6.0"
+__version__ = "0.11.0"
 
 from .extract import extract, detect_sagittal_alignment, auto_crop_roi, select_person
 from .normalize import (
@@ -40,6 +40,7 @@ from .normalize import (
 )
 from .angles import (
     compute_angles,
+    canonicalize_angle_signs,
     compute_extended_angles,
     compute_frontal_angles,
     foot_progression_angle,
@@ -50,12 +51,17 @@ from .corrections import (
     apply_ankle_bias_correction,
     apply_hip_bias_correction,
     apply_knee_bias_correction,
+    fit_landmark_bias_by_phase,
+    apply_landmark_bias_correction,
+    merge_landmark_biases,
+    smooth_landmark_bias,
     ANKLE_BIAS_V1,
     HIP_BIAS_V1,
     KNEE_BIAS_V1,
 )
 from .events import detect_events, list_event_methods, event_consensus, validate_events
-from .cycles import segment_cycles, ensemble_average
+from .cycles import (segment_cycles, ensemble_average, summarize_cycles,
+                     reject_outlier_cycles)
 from .analysis import (
     analyze_gait,
     regularity_index,
@@ -80,6 +86,11 @@ from .analysis import (
     compute_derivatives,
     time_frequency_analysis,
 )
+from .ankle_dynamics import (
+    restore_ankle_dynamics,
+    ankle_restoration_delta,
+    ANKLE_TF_METADATA,
+)
 from .normative import (
     get_normative_curve,
     get_normative_band,
@@ -94,7 +105,7 @@ from .scores import (
     sagittal_deviation_index,
     movement_analysis_profile,
 )
-from .schema import load_json, save_json, set_subject
+from .schema import load_json, save_json, set_study, set_subject
 from .export import (
     export_csv,
     export_mot,
@@ -132,11 +143,48 @@ from .experimental import (
 from .experimental_vicon import (
     load_vicon_trial_mat,
     load_c3d,
+    compute_c3d_reference_angles,
+    detect_c3d_convention,
+    C3D_MARKER_CONVENTIONS,
     estimate_vicon_offset_seconds,
     align_vicon_to_myogait,
     compute_single_trial_benchmark_metrics,
     attach_vicon_experimental_block,
     run_single_trial_vicon_benchmark,
+)
+from .isb import (
+    reconstruct_isb_angles,
+    ISB_REQUIRED_LANDMARKS,
+    InsufficientLandmarksForISBError,
+)
+from .vicon_calibration import (
+    estimate_hjc_harrington,
+    calibrate_hjc_from_static,
+    reconstruct_isb_angles_tier2,
+    parse_protocol,
+    parse_vsk,
+    calibrate_technical_frames,
+    apply_technical_calibration,
+    reconstruct_isb_angles_tier3,
+    load_raw_c3d_markers,
+)
+from .pipeline import run_pipeline, filter_cycles_by_direction, enforce_flexion_positive
+from .autoconfig import run_auto, detect_recipe
+from . import exceptions
+from .kinetics import (
+    estimate_kinetics,
+    damp_ap_force,
+    detect_camera_motion,
+    background_vertical_shift,
+)
+from .exceptions import (
+    MyogaitError,
+    ExtractionError,
+    UnreadableVideoError,
+    NoPersonDetectedError,
+    InvalidPivotError,
+    MissingDependencyError,
+    InvalidC3DError,
 )
 from .experimental_benchmark import (
     DEFAULT_SINGLE_PAIR_BENCHMARK_CONFIG,
@@ -172,6 +220,7 @@ __all__ = [
     "extract",
     "normalize",
     "compute_angles",
+    "canonicalize_angle_signs",
     "compute_extended_angles",
     "compute_frontal_angles",
     "foot_progression_angle",
@@ -180,6 +229,10 @@ __all__ = [
     "apply_ankle_bias_correction",
     "apply_hip_bias_correction",
     "apply_knee_bias_correction",
+    "fit_landmark_bias_by_phase",
+    "apply_landmark_bias_correction",
+    "merge_landmark_biases",
+    "smooth_landmark_bias",
     "ANKLE_BIAS_V1",
     "HIP_BIAS_V1",
     "KNEE_BIAS_V1",
@@ -188,6 +241,8 @@ __all__ = [
     "event_consensus",
     "validate_events",
     "segment_cycles",
+    "summarize_cycles",
+    "reject_outlier_cycles",
     "ensemble_average",
     "analyze_gait",
     "filter_median",
@@ -207,6 +262,10 @@ __all__ = [
     "harmonic_ratio",
     "step_length",
     "walking_speed",
+    "estimate_kinetics",
+    "damp_ap_force",
+    "detect_camera_motion",
+    "background_vertical_shift",
     "detect_pathologies",
     "single_support_time",
     "toe_clearance",
@@ -224,6 +283,9 @@ __all__ = [
     "pca_waveform_analysis",
     "compute_derivatives",
     "time_frequency_analysis",
+    "restore_ankle_dynamics",
+    "ankle_restoration_delta",
+    "ANKLE_TF_METADATA",
     "get_normative_curve",
     "get_normative_band",
     "select_stratum",
@@ -237,6 +299,20 @@ __all__ = [
     "load_json",
     "save_json",
     "set_subject",
+    "set_study",
+    "run_pipeline",
+    "run_auto",
+    "detect_recipe",
+    "filter_cycles_by_direction",
+    "enforce_flexion_positive",
+    "exceptions",
+    "MyogaitError",
+    "ExtractionError",
+    "UnreadableVideoError",
+    "NoPersonDetectedError",
+    "InvalidPivotError",
+    "MissingDependencyError",
+    "InvalidC3DError",
     "plot_angles",
     "plot_cycles",
     "plot_events",
@@ -286,6 +362,21 @@ __all__ = [
     "apply_video_degradation",
     "load_vicon_trial_mat",
     "load_c3d",
+    "compute_c3d_reference_angles",
+    "reconstruct_isb_angles",
+    "ISB_REQUIRED_LANDMARKS",
+    "InsufficientLandmarksForISBError",
+    "estimate_hjc_harrington",
+    "calibrate_hjc_from_static",
+    "reconstruct_isb_angles_tier2",
+    "parse_protocol",
+    "parse_vsk",
+    "calibrate_technical_frames",
+    "apply_technical_calibration",
+    "reconstruct_isb_angles_tier3",
+    "load_raw_c3d_markers",
+    "detect_c3d_convention",
+    "C3D_MARKER_CONVENTIONS",
     "estimate_vicon_offset_seconds",
     "align_vicon_to_myogait",
     "compute_single_trial_benchmark_metrics",

@@ -78,7 +78,7 @@ list.  Calling either function twice is a no-op: a marker is set in
 from __future__ import annotations
 
 import logging
-from typing import List, Optional
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 
@@ -429,6 +429,29 @@ def _apply_bias_correction_generic(
     marker_key: str,
 ) -> dict:
     """Shared implementation for per-joint Fourier bias corrections."""
+    # Deprecated (v0.8) — scheduled for removal in v1.0.
+    #
+    # Two independent grounds, both executable-guardrail-worthy:
+    # 1. These corrections encode the average bias of HEALTHY reference
+    #    gait (LASSO trained on n<=12 healthy adults). Applied to
+    #    pathological gait they can "restore" a healthy-looking curve
+    #    exactly where the clinical sign lives (swing knee peak,
+    #    push-off, end-stance hip).
+    # 2. Benchmarked against optical motion capture with modern pose
+    #    backbones, the raw pipeline OUTPERFORMS the LASSO-corrected
+    #    one (mean curve RMSE 6.2 deg raw vs 8.0 deg corrected) — the
+    #    biases these models were trained on are no longer present.
+    import warnings as _warnings
+    _warnings.warn(
+        f"apply_{joint}_bias_correction is deprecated and will be removed "
+        "in myogait 1.0. It applies a HEALTHY-adult prior (LASSO, n<=12 "
+        "subjects) that can mask pathological gait signatures, and "
+        "benchmarks show it degrades accuracy with modern pose models. "
+        "The recommended pipeline (mg.run_pipeline) applies no bias "
+        "correction.",
+        DeprecationWarning,
+        stacklevel=3,
+    )
     if model_key not in _BIAS_MODELS:
         raise ValueError(
             f"Unknown {joint} bias model '{model_key}'. "
@@ -550,12 +573,477 @@ def apply_knee_bias_correction(
     )
 
 
+_DEFAULT_CORRECTABLE_LANDMARKS = (
+    "LEFT_KNEE", "RIGHT_KNEE",
+    "LEFT_ANKLE", "RIGHT_ANKLE",
+    "LEFT_HEEL", "RIGHT_HEEL",
+    "LEFT_FOOT_INDEX", "RIGHT_FOOT_INDEX",
+)
+
+
+def _landmark_xy(landmarks: dict, name: str):
+    """Extract (x, y) as np.ndarray for a landmark, or None if unusable."""
+    lm = landmarks.get(name)
+    if lm is None:
+        return None
+    if isinstance(lm, dict):
+        x, y = lm.get("x"), lm.get("y")
+    elif isinstance(lm, (list, tuple)) and len(lm) >= 2:
+        x, y = lm[0], lm[1]
+    else:
+        return None
+    if x is None or y is None:
+        return None
+    try:
+        xf, yf = float(x), float(y)
+    except (TypeError, ValueError):
+        return None
+    if np.isnan(xf) or np.isnan(yf):
+        return None
+    return np.array([xf, yf])
+
+
+def _walking_direction_sign(frames: list, i: int, fps: float,
+                              half_window_s: float = 0.25) -> float:
+    """Sign of the mid-hip x velocity around frame ``i``.
+
+    Returns +1.0 (moving toward image-right), -1.0 (image-left) or
+    0.0 when the direction is ambiguous (standstill, turnaround, or
+    missing hip landmarks at the window edges).  Used to express
+    antero-posterior biases in the direction-of-progression frame so
+    that outbound and return passes of a walkway trial agree.
+    """
+    k = max(1, int(half_window_s * fps))
+    lo, hi = max(0, i - k), min(len(frames) - 1, i + k)
+    a = _pose_anchor(frames[lo].get("landmarks", {}))
+    b = _pose_anchor(frames[hi].get("landmarks", {}))
+    if a is None or b is None:
+        return 0.0
+    dx = b[0][0] - a[0][0]
+    if abs(dx) < 1e-5:
+        return 0.0
+    return 1.0 if dx > 0 else -1.0
+
+
+def _pose_anchor(landmarks: dict):
+    """Return (mid_hip_xy, thigh_scale) for a landmark dict or None.
+
+    Anchoring on mid-hip and rescaling by the hip↔knee segment length
+    makes landmark comparisons camera-independent (kills translation
+    and depth-dependent scale).  Falls back to None when any of the
+    four required landmarks (LEFT/RIGHT × HIP/KNEE) is missing.
+    """
+    lh = _landmark_xy(landmarks, "LEFT_HIP")
+    rh = _landmark_xy(landmarks, "RIGHT_HIP")
+    lk = _landmark_xy(landmarks, "LEFT_KNEE")
+    rk = _landmark_xy(landmarks, "RIGHT_KNEE")
+    if any(v is None for v in (lh, rh, lk, rk)):
+        return None
+    mid_hip = (lh + rh) / 2.0
+    mid_knee = (lk + rk) / 2.0
+    scale = float(np.linalg.norm(mid_knee - mid_hip))
+    if scale < 1e-6:
+        return None
+    return mid_hip, scale
+
+
+def fit_landmark_bias_by_phase(
+    sapiens_data: dict,
+    vicon_data: dict,
+    cycles_sapiens: dict,
+    offset_s: float,
+    n_bins: int = 10,
+    landmarks: Optional[Tuple[str, ...]] = None,
+) -> Dict[str, Dict[str, list]]:
+    """Fit a per-phase 2D bias between Sapiens landmarks and a Vicon C3D.
+
+    Both dicts must already be aligned by ``offset_s`` such that
+    ``vicon_time = sapiens_time + offset_s``.  The video-side
+    ``cycles_sapiens`` (as returned by :func:`segment_cycles`) provides
+    the phase 0-1 assignment per frame per side.
+
+    Left-side landmarks are binned on the left cycle phase, right-side
+    on the right cycle phase — the two feet are 50 % out of phase, so
+    binning them on a single side would smear the swing/stance
+    contrast that motivates the correction.
+
+    The antero-posterior component ``dx`` is expressed in the
+    **direction-of-progression frame** (positive = ahead of the body),
+    using each recording's own local mid-hip velocity sign.  Without
+    this, a there-and-back walkway recording mixes outbound and
+    return passes whose image-space dx biases have opposite signs and
+    partially cancel — that smearing is what made naive per-trial
+    fits fail to generalise.  Frames near the turnaround (ambiguous
+    direction) are skipped.
+
+    Returns a dict::
+
+        {landmark_name: {"dx": [b_0, ..., b_{n-1}],
+                          "dy": [b_0, ..., b_{n-1}],
+                          "n":  [count_0, ..., count_{n-1}]}}
+
+    where (dx, dy) is expressed in *thigh-length units* in a mid-hip
+    anchored frame (so ``apply_landmark_bias_correction`` can rescale
+    it back to normalised image coordinates using the current frame's
+    thigh length and local walking direction).
+    """
+    if landmarks is None:
+        landmarks = _DEFAULT_CORRECTABLE_LANDMARKS
+
+    mg_fps = float(sapiens_data.get("meta", {}).get("fps", 30.0))
+    vc_fps = float(vicon_data.get("meta", {}).get("fps", 200.0))
+    if mg_fps <= 0 or vc_fps <= 0:
+        raise ValueError("Invalid fps on sapiens_data or vicon_data")
+
+    phase = _phase_per_frame(sapiens_data, cycles_sapiens)  # {"L","R"} in [0,1]
+    mg_frames = sapiens_data.get("frames", [])
+    vc_frames = vicon_data.get("frames", [])
+
+    accum = {name: {"dx": [[] for _ in range(n_bins)],
+                     "dy": [[] for _ in range(n_bins)]}
+             for name in landmarks}
+
+    for i, frame in enumerate(mg_frames):
+        t = frame.get("time_s")
+        if t is None:
+            t = frame.get("frame_idx", i) / mg_fps
+        vc_i = int(round((float(t) + float(offset_s)) * vc_fps))
+        if vc_i < 0 or vc_i >= len(vc_frames):
+            continue
+
+        mg_anchor = _pose_anchor(frame.get("landmarks", {}))
+        vc_anchor = _pose_anchor(vc_frames[vc_i].get("landmarks", {}))
+        if mg_anchor is None or vc_anchor is None:
+            continue
+        mg_mh, mg_s = mg_anchor
+        vc_mh, vc_s = vc_anchor
+
+        dir_mg = _walking_direction_sign(mg_frames, i, mg_fps)
+        dir_vc = _walking_direction_sign(vc_frames, vc_i, vc_fps)
+        if dir_mg == 0.0 or dir_vc == 0.0:
+            continue  # turnaround / standstill — direction ambiguous
+
+        for name in landmarks:
+            mg_p = _landmark_xy(frame.get("landmarks", {}), name)
+            vc_p = _landmark_xy(vc_frames[vc_i].get("landmarks", {}), name)
+            if mg_p is None or vc_p is None:
+                continue
+            mg_rel = (mg_p - mg_mh) / mg_s
+            vc_rel = (vc_p - vc_mh) / vc_s
+            # Progression frame: +x is "forward" for each recording
+            d = np.array([mg_rel[0] * dir_mg - vc_rel[0] * dir_vc,
+                           mg_rel[1] - vc_rel[1]])
+
+            side_key = "L" if name.startswith("LEFT_") else "R"
+            phi = phase[side_key][i] if i < len(phase[side_key]) else np.nan
+            if np.isnan(phi):
+                continue
+            b = min(int(phi * n_bins), n_bins - 1)
+            accum[name]["dx"][b].append(float(d[0]))
+            accum[name]["dy"][b].append(float(d[1]))
+
+    out = {}
+    for name in landmarks:
+        dx_bins = [float(np.mean(v)) if v else np.nan
+                   for v in accum[name]["dx"]]
+        dy_bins = [float(np.mean(v)) if v else np.nan
+                   for v in accum[name]["dy"]]
+        n_bins_count = [len(v) for v in accum[name]["dx"]]
+        out[name] = {"dx": dx_bins, "dy": dy_bins, "n": n_bins_count}
+    return out
+
+
+def _fill_nan_bins(arr: list) -> np.ndarray:
+    """Fill NaN phase-bins by nearest-neighbour on the cycle circle."""
+    a = np.array(arr, dtype=float)
+    n = a.size
+    ok = ~np.isnan(a)
+    if ok.sum() == 0:
+        return np.zeros(n)
+    if ok.sum() == n:
+        return a
+    idx = np.arange(n)
+    # Linear interp on the good bins, treating the cycle as circular by
+    # duplicating the good values on either side.
+    good_i = idx[ok]
+    good_v = a[ok]
+    # Add wrap-around anchors
+    good_i_wrap = np.concatenate([good_i - n, good_i, good_i + n])
+    good_v_wrap = np.concatenate([good_v, good_v, good_v])
+    a[~ok] = np.interp(idx[~ok], good_i_wrap, good_v_wrap)
+    return a
+
+
+def apply_landmark_bias_correction(
+    data: dict,
+    bias: Dict[str, Dict[str, list]],
+    cycles: dict,
+    *,
+    in_place: bool = False,
+) -> dict:
+    """Subtract a phase-binned landmark bias from a Sapiens myogait dict.
+
+    For each frame that belongs to a detected cycle, looks up the
+    left- or right-cycle phase, interpolates the bias linearly (with
+    circular wrap) between the two nearest phase bins, rescales by
+    the frame's current thigh length, and subtracts it from the
+    landmark xy in normalised image coordinates.
+
+    Frames outside any cycle, or where the mid-hip / thigh scale
+    cannot be computed, are left unchanged.  Landmarks not present
+    in ``bias`` are also untouched.  Compute-angles output already
+    stored in ``data['angles']`` becomes stale after this call —
+    re-run :func:`compute_angles` if you need updated joint angles.
+
+    .. warning::
+       Do **not** re-run :func:`normalize` after this correction — the
+       Butterworth filter would smooth away the phase-binned offsets
+       and cancel the fix.  Apply the correction *after* normalize,
+       then recompute angles directly.
+
+    .. warning::
+       Correcting a **subset** of landmarks (e.g. knee only, or heel
+       only) breaks the geometric coherence of the hip-knee-ankle
+       triangle: the pose estimator's per-landmark biases are not
+       independent errors — correcting one without the others pushes
+       the joint angle in an unpredictable direction.  In practice:
+
+       - ``(LEFT_KNEE, RIGHT_KNEE, LEFT_ANKLE, RIGHT_ANKLE)`` is the
+         recommended set if you use this at all.
+       - Never include heel / foot_index: the pose-estimator "foot
+         centre" landmark is not the anatomical equivalent of the
+         Vicon MTP marker, so its measured "bias" encodes marker-
+         placement disagreement, not a fixable error, and on the
+         short foot segment any residual position error explodes
+         into angle error.
+
+    .. note::
+       **When is this worth using?**  On Bath BioCV with Sapiens 2
+       (quick) and a correctly-loaded C3D reference (isotropic
+       normalisation — see :func:`load_c3d`), the *uncorrected*
+       myogait pipeline already matches the projected Vicon
+       kinematics at 3.7–6.1° RMSE (2.4–3.2° after mean-centering)
+       with waveform correlations of 0.92–0.99 — and this correction
+       does **not** improve on that: the residual landmark bias is
+       small and subject-specific, so a correction fitted on other
+       subjects adds more noise than it removes.  Reserve this tool
+       for weaker pose backbones or setups where a per-patient
+       reference session is available.
+    """
+    if not in_place:
+        data = _shallow_copy_with_frames(data)
+
+    frames = data.get("frames", [])
+    phase = _phase_per_frame(data, cycles)
+    # Prefilled bins per landmark
+    bias_arr = {}
+    for name, b in bias.items():
+        dx = _fill_nan_bins(b.get("dx", []))
+        dy = _fill_nan_bins(b.get("dy", []))
+        bias_arr[name] = (dx, dy)
+
+    def _interp_bias(name: str, phi: float) -> Tuple[float, float]:
+        dx, dy = bias_arr[name]
+        n = len(dx)
+        pos = phi * n  # [0, n)
+        i0 = int(np.floor(pos)) % n
+        i1 = (i0 + 1) % n
+        w = pos - np.floor(pos)
+        return (float((1 - w) * dx[i0] + w * dx[i1]),
+                float((1 - w) * dy[i0] + w * dy[i1]))
+
+    fps = float(data.get("meta", {}).get("fps", 30.0))
+    # Per-frame thigh scale is noisy (pose jitter); multiplying the
+    # correction by it injects that noise straight into the corrected
+    # landmarks and inflates trial-to-trial ROM variance.  Smooth the
+    # scale with a ~0.5 s rolling median: tracks genuine slow changes
+    # (subject depth in frontal views) while killing frame jitter.
+    raw_scales = np.full(len(frames), np.nan)
+    for i, frame in enumerate(frames):
+        anchor = _pose_anchor(frame.get("landmarks", {}))
+        if anchor is not None:
+            raw_scales[i] = anchor[1]
+    half_w = max(1, int(0.25 * fps))
+    smooth_scales = np.copy(raw_scales)
+    for i in range(len(frames)):
+        lo, hi = max(0, i - half_w), min(len(frames), i + half_w + 1)
+        window = raw_scales[lo:hi]
+        window = window[~np.isnan(window)]
+        if window.size:
+            smooth_scales[i] = float(np.median(window))
+
+    for i, frame in enumerate(frames):
+        if np.isnan(smooth_scales[i]):
+            continue
+        thigh_scale = float(smooth_scales[i])
+        # Bias dx is stored in the progression frame; convert back to
+        # image space with the local walking direction.  Skip frames
+        # where the direction is ambiguous (turnaround) — applying a
+        # wrongly-signed AP correction there would be worse than none.
+        direction = _walking_direction_sign(frames, i, fps)
+        if direction == 0.0:
+            continue
+        lm_dict = frame["landmarks"]
+        for name in list(lm_dict.keys()):
+            if name not in bias_arr:
+                continue
+            side_key = "L" if name.startswith("LEFT_") else "R"
+            phi = phase[side_key][i] if i < len(phase[side_key]) else np.nan
+            if np.isnan(phi):
+                continue
+            bx, by = _interp_bias(name, float(phi))
+            corr_x = bx * direction * thigh_scale
+            corr_y = by * thigh_scale
+            lm = lm_dict[name]
+            if isinstance(lm, dict):
+                if lm.get("x") is not None:
+                    lm["x"] = float(lm["x"]) - corr_x
+                if lm.get("y") is not None:
+                    lm["y"] = float(lm["y"]) - corr_y
+            elif isinstance(lm, list) and len(lm) >= 2:
+                lm[0] = float(lm[0]) - corr_x
+                lm[1] = float(lm[1]) - corr_y
+    # Angles are now stale — drop them so callers must re-run compute_angles
+    data.pop("angles", None)
+    return data
+
+
+def smooth_landmark_bias(
+    bias: Dict[str, Dict[str, list]],
+    n_harmonics: int = 2,
+    n_out_bins: int = 50,
+) -> Dict[str, Dict[str, list]]:
+    """Fit a truncated Fourier series to a phase-binned bias and resample.
+
+    The raw phase-binned bias (from :func:`fit_landmark_bias_by_phase`,
+    ideally merged over several trials with
+    :func:`merge_landmark_biases`) contains residual bin noise on top
+    of the reproducible bias signal.  Fitting
+    ``1 + Σ_m [a_m sin(2πmφ) + b_m cos(2πmφ)]`` (weighted least
+    squares, weights = per-bin sample counts) and resampling the
+    smooth curve onto ``n_out_bins`` keeps only the low-frequency,
+    reproducible component.
+
+    ``n_harmonics=2`` (5 parameters per axis) is a deliberate strong
+    low-pass: the reproducible part of the bias curves is dominated
+    by the first two harmonics, and higher orders mostly fit residual
+    bin noise.  See the note on :func:`apply_landmark_bias_correction`
+    for when this correction family is worth using at all.
+
+    Returns a new bias dict with the same structure (``dx`` / ``dy`` /
+    ``n`` lists of length ``n_out_bins``) directly usable by
+    :func:`apply_landmark_bias_correction`.
+    """
+    out: Dict[str, Dict[str, list]] = {}
+    for name, b in bias.items():
+        n_bins = len(b.get("dx", []))
+        if n_bins == 0:
+            continue
+        phi_in = (np.arange(n_bins) + 0.5) / n_bins
+        weights = np.asarray(b.get("n", [1] * n_bins), dtype=float)
+
+        def _design(phi):
+            cols = [np.ones_like(phi)]
+            for m in range(1, n_harmonics + 1):
+                cols.append(np.sin(2 * np.pi * m * phi))
+                cols.append(np.cos(2 * np.pi * m * phi))
+            return np.column_stack(cols)
+
+        phi_out = (np.arange(n_out_bins) + 0.5) / n_out_bins
+        X_out = _design(phi_out)
+        smoothed = {}
+        for axis in ("dx", "dy"):
+            y = np.asarray(b[axis], dtype=float)
+            ok = ~np.isnan(y) & (weights > 0)
+            if ok.sum() < 2 * n_harmonics + 1:
+                # Not enough support for the fit — fall back to the
+                # circularly-interpolated raw bins.
+                filled = _fill_nan_bins(list(y))
+                smoothed[axis] = list(np.interp(
+                    phi_out, phi_in, filled, period=1.0))
+                continue
+            X = _design(phi_in[ok])
+            w = np.sqrt(weights[ok])
+            coef, *_ = np.linalg.lstsq(X * w[:, None], y[ok] * w, rcond=None)
+            smoothed[axis] = list(X_out @ coef)
+        # Distribute the total sample count evenly over the new bins so
+        # merge_landmark_biases keeps working on smoothed dicts.
+        total_n = int(np.nansum(weights))
+        out[name] = {
+            "dx": smoothed["dx"],
+            "dy": smoothed["dy"],
+            "n": [max(1, total_n // n_out_bins)] * n_out_bins,
+        }
+    return out
+
+
+def merge_landmark_biases(
+    biases: List[Dict[str, Dict[str, list]]],
+) -> Dict[str, Dict[str, list]]:
+    """Average several per-trial bias fits into one robust bias.
+
+    Bins are combined with a weighted mean (weights = per-bin sample
+    counts ``n``).  Landmarks / bins missing from some fits are
+    averaged over the fits that have them.  Fitting on several trials
+    and merging is the recommended way to obtain a bias that
+    generalises — a single-trial fit inherits that trial's noise.
+    """
+    if not biases:
+        raise ValueError("merge_landmark_biases needs at least one fit")
+    names = sorted({n for b in biases for n in b})
+    out: Dict[str, Dict[str, list]] = {}
+    for name in names:
+        fits = [b[name] for b in biases if name in b]
+        n_bins = max(len(f.get("dx", [])) for f in fits)
+        dx_out, dy_out, n_out = [], [], []
+        for k in range(n_bins):
+            vals_dx, vals_dy, weights = [], [], []
+            for f in fits:
+                if k >= len(f.get("dx", [])):
+                    continue
+                w = float(f.get("n", [1] * n_bins)[k]) if k < len(f.get("n", [])) else 1.0
+                if w <= 0:
+                    continue
+                vx, vy = f["dx"][k], f["dy"][k]
+                if vx is None or vy is None:
+                    continue
+                if np.isnan(vx) or np.isnan(vy):
+                    continue
+                vals_dx.append(vx * w)
+                vals_dy.append(vy * w)
+                weights.append(w)
+            tot = sum(weights)
+            dx_out.append(float(sum(vals_dx) / tot) if tot > 0 else np.nan)
+            dy_out.append(float(sum(vals_dy) / tot) if tot > 0 else np.nan)
+            n_out.append(int(tot))
+        out[name] = {"dx": dx_out, "dy": dy_out, "n": n_out}
+    return out
+
+
+def _shallow_copy_with_frames(data: dict) -> dict:
+    """Shallow-copy the top-level dict but deep-copy every frame's landmark
+    dict so the caller's original stays intact.
+    """
+    import copy
+    out = dict(data)
+    out["frames"] = [
+        {**f, "landmarks": copy.deepcopy(f.get("landmarks", {}))}
+        for f in data.get("frames", [])
+    ]
+    return out
+
+
 __all__ = [
     "ANKLE_BIAS_V1",
     "HIP_BIAS_V1",
     "KNEE_BIAS_V1",
     "apply_perspective_correction",
+    "apply_linear_detrend",
     "apply_ankle_bias_correction",
     "apply_hip_bias_correction",
     "apply_knee_bias_correction",
+    "fit_landmark_bias_by_phase",
+    "apply_landmark_bias_correction",
+    "merge_landmark_biases",
+    "smooth_landmark_bias",
 ]
