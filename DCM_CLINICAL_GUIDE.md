@@ -167,24 +167,34 @@ Your machine is classified as a **Tier 1 (Workstation Grade)** system:
 2. In **Pipeline Setup**:
    - **Experimenter**: Select your name (or use `+ Manage List` to add yourself).
    - **Select Patient**: Choose the patient you just created (e.g., `DCM-001`). The dashboard will confirm: `Loaded DCM-001: Height = 1.75m`.
-   - **Recording Plane**:
-     - `sagittal` (side-view video)
-     - `coronal` (front or back-view video)
-   - **Pose Model**:
-     - On RTX 6000: Select **`sapiens2-ultra`**, **`sapiens2-top`**, or **`vitpose-huge`** for maximum research accuracy.
-     - For fast real-time testing: Select **`mediapipe`** or **`yolo`**.
-   - **Gait Event Method**: Keep as `zeni` (standard) or choose `crossing` / `velocity`.
-   - **Frame Quality Preset**:
-     - `Distant subject` (Default: adaptive visibility floor, recommended for wide capture angles).
-     - `Standard` (Stricter gating, recommended for close well-framed recordings).
-   - **Visible Side (Sagittal Only)**:
-     - `both`: Keeps both legs.
-     - `left` or `right`: If the patient walked such that one leg was obscured from camera view, pick the visible leg. The pipeline will automatically scrub noisy occluded data.
+   - **Analysis Settings**: every setting is listed, grouped in panels, with an ⓘ explanation
+     (hover it) and its myogait default. **All defaults are myogait's own validated defaults**, so
+     a run with untouched settings is identical to `myogait.run_pipeline`. A green banner confirms
+     this; if you change anything that affects the numbers, a yellow banner lists it, and the run's
+     README.md and run_metadata.json record it. **↺ Reset to myogait defaults** restores everything.
+     Settings you are most likely to touch:
+     - **Pose model** (default `sapiens2-quick`, myogait's validated model; needs the GPU).
+       Process every patient and session with the same model.
+     - **Longest stride kept** (default 1.6 s). Strides slower than this are discarded. For a
+       slow, severe DCM walker whose cycles are reported as dropped, raise it (e.g. 2.5 s).
+     - **Frame quality preset**: `Standard (myogait default)`, or `Distant subject` when the
+       patient is far from the camera and too many frames are discarded.
+     - **Side to analyse**: `both` (default) or the leg nearest the camera; the run README says
+       which leg faced the camera. Symmetry needs `both`.
+     - **Recording plane**: `sagittal` (side view) or `coronal` (front/back view). It is recorded
+       in the outputs; for coronal videos also untick *Normalise walking direction*.
+     - **Optional corrections** (perspective, drift removal, median spike filter, healthy-adult
+       bias correction) are off by default because they are not part of myogait's validated
+       recipe; the bias correction should stay off for DCM patients.
+   - **Left/right labels** always refer to the patient's true sides, in the data, the report and
+     the labelled videos.
 3. In **Video Selection**:
    - Select **File Upload** to drag-and-drop your MP4/MOV video, or **Local File Path** to paste the exact video location.
 4. Click the large blue **`Run Clinical Analysis`** button.
-5. A spinner will show the 7-step analysis:
-   `Extracting landmarks` ➔ `Filtering pose data` ➔ `Computing joint angles` ➔ `Perspective correction` ➔ `Gait cycle segmentation` ➔ `Symmetry & GPS scores` ➔ `Generating PDF/Excel/OpenSim`.
+5. A spinner runs the analysis: pose extraction ➔ myogait calculations (filtering, angles, gait
+   events, cycles, statistics, scores) ➔ PDF / Excel / CSV / OpenSim / plots / videos. Any
+   myogait quality warning (few cycles, out-of-plane distortion, dropped strides) is shown
+   above the results.
 
 ---
 
@@ -241,7 +251,9 @@ Output/
   ```
 
 ### Q4: I ran a video, but GPS (Gait Profile Score) says `N/A`.
-- **Cause**: GPS is calculated for Sagittal (side-view) recordings using bilateral hip, knee, and ankle kinematics. If coronal plane or single-side scrubbing is enabled, individual joint kinematics are reported instead of bilateral composite GPS.
+- **Cause**: no gait cycle passed myogait's cycle filters (or one side had too few heel strikes).
+  The warnings above the results say why. For a slow walker, raise **Longest stride kept**
+  (Gait events & cycles panel) and run again.
 
 ---
 *For questions, clinical collaboration, or bug reports, please open an issue on the repository or contact the research team.*
