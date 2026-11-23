@@ -1,0 +1,2 @@
+-e .[sapiens,sapiens2,mediapipe,yolo,vitpose,excel,yaml,dashboard]
+sapiens @ https://github.com/facebookresearch/sapiens2/archive/7e5bae88456ac418ff0e58e74106c9fe192055d4.zip

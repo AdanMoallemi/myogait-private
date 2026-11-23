@@ -26,3 +26,11 @@ temp_myogait/
 
 # macOS
 .DS_Store
+
+# Installed environment, caches, model weights and install log (created by the installers)
+/.venv/
+/.cache/
+/models/
+install_log.txt
+*.pt2
+*.safetensors

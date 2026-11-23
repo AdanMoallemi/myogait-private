@@ -1,5 +1,17 @@
 # myogait
 
+> **DCM clinical pipeline (this private repository).** Set up a fresh Windows PC in two steps:
+> 1. Get the code into a short path such as `C:\myogait-private`: `git clone` it, or
+>    **Code ▸ Download ZIP** and extract.
+> 2. Double-click **`install_windows_gpu.bat`**, then use the **MyoGait DCM Dashboard** shortcut
+>    it puts on the desktop.
+>
+> No Python, Conda or VS Code needed: the installer downloads its own Python, picks the PyTorch
+> build for the NVIDIA driver, installs the pinned versions in `requirements/dcm-lock.txt` and
+> keeps everything inside the folder. Updates: `update_windows.bat`. macOS / Linux:
+> `./install_mac_linux.sh` then `./run_dashboard.sh`. Full walkthrough: [DCM_CLINICAL_GUIDE.md](DCM_CLINICAL_GUIDE.md).
+> All calculation settings default to myogait's validated values (`myogait.run_pipeline`).
+
 Markerless video-based gait analysis toolkit.
 
 [![CI](https://github.com/IDMDataHub/myogait/actions/workflows/ci.yml/badge.svg)](https://github.com/IDMDataHub/myogait/actions/workflows/ci.yml)

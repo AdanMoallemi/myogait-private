@@ -1,47 +1,36 @@
 @echo off
+rem Start the MyoGait DCM dashboard. It opens in the web browser.
+rem Keep this window open while you use the dashboard; close it to stop.
 setlocal
+cd /d "%~dp0"
 
-echo Starting MyoGait Clinical Dashboard...
+set "PY=%~dp0.venv\Scripts\python.exe"
+if not exist "%PY%" (
+    echo The software is not installed yet. Double-click install_windows_gpu.bat first.
+    pause
+    exit /b 1
+)
 
-set "ENV_DIR=%~d0\conda_envs\dcm-gait"
-if not exist "%ENV_DIR%" set "ENV_DIR=%~dp0env_dcm"
-
-:: Set temp folder, HuggingFace and model cache on this drive to prevent C: space exhaustion
+rem Keep temporary files, model weights and caches on this drive.
 set "TEMP=%~dp0.tmp"
 set "TMP=%~dp0.tmp"
-set "TMPDIR=%~dp0.tmp"
 set "MYOGAIT_MODELS_DIR=%~dp0models"
 set "HF_HOME=%~dp0.cache\huggingface"
 set "TORCH_HOME=%~dp0.cache\torch"
-if not exist "%~dp0.tmp" mkdir "%~dp0.tmp" 2>nul
-if not exist "%MYOGAIT_MODELS_DIR%" mkdir "%MYOGAIT_MODELS_DIR%" 2>nul
-if not exist "%HF_HOME%" mkdir "%HF_HOME%" 2>nul
+set "PYTHONUTF8=1"
+if not exist "%TEMP%" mkdir "%TEMP%"
 
-:: If the environment python exists, run streamlit directly with zero activation overhead or warnings
-if exist "%ENV_DIR%\python.exe" (
-    "%ENV_DIR%\python.exe" -m streamlit run dcm_dashboard.py --server.address 127.0.0.1 --browser.gatherUsageStats false
-    pause
-    exit /b 0
+rem Skip Streamlit's one-time e-mail question.
+if not exist "%USERPROFILE%\.streamlit\credentials.toml" (
+    if not exist "%USERPROFILE%\.streamlit" mkdir "%USERPROFILE%\.streamlit"
+    > "%USERPROFILE%\.streamlit\credentials.toml" (
+        echo [general]
+        echo email = ""
+    )
 )
 
-set "CONDA_CMD="
-where conda >nul 2>nul
-if %errorlevel% equ 0 set "CONDA_CMD=conda"
-
-if not defined CONDA_CMD if exist "%USERPROFILE%\miniconda3\condabin\conda.bat" set "CONDA_CMD=%USERPROFILE%\miniconda3\condabin\conda.bat"
-if not defined CONDA_CMD if exist "%USERPROFILE%\anaconda3\condabin\conda.bat" set "CONDA_CMD=%USERPROFILE%\anaconda3\condabin\conda.bat"
-if not defined CONDA_CMD if exist "%LOCALAPPDATA%\miniconda3\condabin\conda.bat" set "CONDA_CMD=%LOCALAPPDATA%\miniconda3\condabin\conda.bat"
-if not defined CONDA_CMD if exist "%LOCALAPPDATA%\anaconda3\condabin\conda.bat" set "CONDA_CMD=%LOCALAPPDATA%\anaconda3\condabin\conda.bat"
-if not defined CONDA_CMD if exist "C:\ProgramData\miniconda3\condabin\conda.bat" set "CONDA_CMD=C:\ProgramData\miniconda3\condabin\conda.bat"
-if not defined CONDA_CMD if exist "C:\ProgramData\anaconda3\condabin\conda.bat" set "CONDA_CMD=C:\ProgramData\anaconda3\condabin\conda.bat"
-if not defined CONDA_CMD if exist "C:\Miniconda3\condabin\conda.bat" set "CONDA_CMD=C:\Miniconda3\condabin\conda.bat"
-if not defined CONDA_CMD if exist "C:\Anaconda3\condabin\conda.bat" set "CONDA_CMD=C:\Anaconda3\condabin\conda.bat"
-
-if exist "%ENV_DIR%\Scripts\activate.bat" (
-    call "%ENV_DIR%\Scripts\activate.bat"
-) else if defined CONDA_CMD (
-    call "%CONDA_CMD%" activate "%ENV_DIR%"
-)
-
-streamlit run dcm_dashboard.py --server.address 127.0.0.1 --browser.gatherUsageStats false
+echo Starting the MyoGait DCM dashboard... it will open in your browser.
+echo Keep this window open while you work. Close it to stop the dashboard.
+"%PY%" -m streamlit run dcm_dashboard.py
+echo.
 pause

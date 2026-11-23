@@ -1,0 +1,14 @@
+# Dashboard settings (read by Streamlit when started from this folder).
+
+[server]
+# Local-only: reachable from this PC (and over Remote Desktop), not from the network.
+address = "127.0.0.1"
+port = 8501
+# Clinical videos can be large; allow uploads up to 4 GB (Streamlit's default is 200 MB).
+maxUploadSize = 4096
+# Do not watch the folder for code changes (the .venv folder holds thousands of files).
+fileWatcherType = "none"
+
+[browser]
+gatherUsageStats = false
+serverAddress = "127.0.0.1"

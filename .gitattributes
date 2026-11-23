@@ -1,0 +1,5 @@
+# Windows scripts are stored with Windows line endings so they run correctly
+# whether the repository is cloned or downloaded as a ZIP.
+*.bat -text
+*.ps1 -text
+*.sh text eol=lf

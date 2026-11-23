@@ -2,16 +2,16 @@
 
 Welcome to the **MyoGait Clinical Gait Analysis Platform**! This guide is written specifically for clinical researchers, clinicians, fellows, and students with **zero prior programming or coding experience**.
 
-By following these step-by-step instructions, you will learn how to open the project in Visual Studio Code (VS Code), set up the GPU-accelerated environment with one click, run the clinical dashboard, digitize patient Case Report Forms (CRFs), and generate complete biomechanical reports.
+By following these step-by-step instructions, you will learn how to install the software on a Windows PC with one double-click, run the clinical dashboard, digitize patient Case Report Forms (CRFs), and generate complete biomechanical reports.
 
 ---
 
 ## Table of Contents
 1. [Prerequisites: What You Need on Your Computer](#1-prerequisites-what-you-need-on-your-computer)
-2. [Step 1: Opening the Project in VS Code](#2-step-1-opening-the-project-in-vs-code)
-3. [Step 2: One-Step Automated Environment Setup](#3-step-2-one-step-automated-environment-setup)
-4. [Step 3: Selecting the Python Interpreter in VS Code](#4-step-3-selecting-the-python-interpreter-in-vs-code)
-5. [Step 4: Launching the Dashboard from VS Code](#5-step-4-launching-the-dashboard-from-vs-code)
+2. [Step 1: Getting the Project onto the PC](#2-step-1-getting-the-project-onto-the-pc)
+3. [Step 2: One-Step Automated Setup](#3-step-2-one-step-automated-setup)
+4. [Step 3: Launching the Dashboard](#4-step-3-launching-the-dashboard)
+5. [Step 4: Updating to a New Version](#5-step-4-updating-to-a-new-version)
 6. [Hardware Guide & GPU Clearance (NVIDIA RTX 6000 24GB)](#6-hardware-guide--gpu-clearance)
 7. [Step-by-Step Clinical Workflow in the Dashboard](#7-step-by-step-clinical-workflow-in-the-dashboard)
 8. [Where Results Are Saved & Viewing Outputs](#8-where-results-are-saved--viewing-outputs)
@@ -21,105 +21,97 @@ By following these step-by-step instructions, you will learn how to open the pro
 
 ## 1. Prerequisites: What You Need on Your Computer
 
-Before starting, ensure the following three free tools are installed on your workstation:
+- A **Windows 10 or 11** PC with an internet connection. Remote Desktop is fine: the dashboard
+  runs in the PC's web browser.
+- An **NVIDIA graphics card** with its driver installed (recommended). Check by opening
+  *Command Prompt* and typing `nvidia-smi`; if that prints a table with the GPU name, you are
+  ready. If not, install the driver from [nvidia.com/drivers](https://www.nvidia.com/drivers).
+  Without a GPU everything still works on the CPU with the `mediapipe` pose model, only slower
+  and less accurately.
+- About **15 GB of free disk space** on the drive where you put the project.
+- Your **GitHub login** (the repository is private).
 
-1. **Visual Studio Code (VS Code)**: Your code editor and workspace manager.  
-   👉 [Download VS Code for Windows/Mac](https://code.visualstudio.com/)
-2. **Miniconda or Anaconda**: Manages Python and GPU packages securely.  
-   👉 [Download Miniconda for Windows (64-bit)](https://docs.anaconda.com/miniconda/)
-   *(During Anaconda/Miniconda installation, check the box: "Add Miniconda3 to my PATH environment variable" if prompted, or use the "Anaconda Prompt").*
-3. **NVIDIA GPU Drivers** *(Already installed if you have an NVIDIA Quadro RTX 6000 / RTX 3000 / RTX 4000 PC)*.
-
----
-
-## 2. Step 1: Opening the Project in VS Code
-
-1. **Open Visual Studio Code**.
-2. Go to the top menu bar: click **`File`** > **`Open Folder...`** (or press `Ctrl + K`, then `Ctrl + O` on Windows; `Cmd + O` on Mac).
-3. Navigate to where the `myogait` project is located on your computer, select the main **`myogait`** folder, and click **Select Folder**.
-4. If VS Code shows a pop-up saying *"Do you trust the authors of the files in this folder?"*, click **"Yes, I trust the authors"**.
-
-### Tour of VS Code for Beginners:
-- **Left Sidebar (File Explorer)**: Lists all folders and files (`myogait/`, `dcm_dashboard.py`, `Output/`, etc.).
-- **Center Area (Editor)**: Where file contents are displayed.
-- **Bottom Area (Integrated Terminal)**: Where you run commands. (You can toggle it open or closed at any time by pressing **`Ctrl + ~`** or going to **`Terminal` > `New Terminal`**).
+Nothing else: you do **not** need to install Python, Conda or VS Code. The installer downloads
+its own copy of Python and keeps everything (packages, caches, model weights) inside the project
+folder, on the same drive.
 
 ---
 
-## 3. Step 2: One-Step Automated Environment Setup
+## 2. Step 1: Getting the Project onto the PC
 
-We provide automated setup scripts that configure Python, CUDA GPU drivers, PyTorch, and all AI pose models in a single command.
+Use a **short folder path without spaces**, for example `C:\myogait-private` or
+`D:\myogait-private` (Windows limits file paths to 260 characters, and some packages have deep
+folders).
 
-> 🔒 **Environment Isolation Guarantee**:  
-> The installer creates a dedicated, isolated Conda environment named **`dcm-gait`**. It will **never** alter, overwrite, or conflict with your `base` environment or any other existing Conda/Python environments on your workstation. Everything installed remains 100% contained within `dcm-gait`.
+**Option A — Git (recommended: one-click updates later).** Open *PowerShell* and run:
 
-### In VS Code Terminal:
-1. Open the integrated terminal: Click **`Terminal`** > **`New Terminal`** at the top menu (or press `Ctrl + ~`).
-2. In the terminal window at the bottom, run the command for your shell:
-
-   **On Windows (PowerShell - Default in VS Code):**
-   ```powershell
-   .\install_windows_gpu.ps1
-   ```
-   *(Or in Command Prompt: `.\install_windows_gpu.bat`)*
-
-   **On macOS / Linux:**
-   ```bash
-   chmod +x ./install_linux_gpu.sh
-   ./install_linux_gpu.sh
-   ```
-
-3. **What the script does automatically:**
-   - Creates a dedicated Conda environment named **`dcm-gait`** (Python 3.11).
-   - Installs **PyTorch with CUDA 12.4** GPU acceleration.
-   - Installs all MyoGait AI pose backends, Streamlit dashboard, OpenSim exporters, and Excel/PDF generators.
-   - Tests your GPU and prints a verification box:
-     ```text
-     --------------------------------------------------
-     PyTorch Version: 2.x
-     CUDA Available: True
-     GPU Name: NVIDIA Quadro RTX 6000
-     VRAM (GB): 24.0
-     --------------------------------------------------
-     ```
-
----
-
-## 4. Step 3: Selecting the Python Interpreter in VS Code
-
-To make sure VS Code uses the newly created `dcm-gait` environment:
-
-1. Press **`Ctrl + Shift + P`** (Windows) or **`Cmd + Shift + P`** (Mac) to open the Command Palette.
-2. Type: **`Python: Select Interpreter`** and press **Enter**.
-3. Select **`Python 3.11 (dcm-gait: conda)`** from the list.
-4. If prompted to install the Microsoft Python Extension, click **Install**.
-
----
-
-## 5. Step 4: Launching the Dashboard from VS Code
-
-### Method 1: The One-Command Launch (Inside VS Code Terminal)
-In the VS Code Terminal, run:
-
-**On Windows PowerShell:**
 ```powershell
-.\run_dashboard.ps1
+winget install --id Git.Git -e
 ```
-*(Or directly: `streamlit run dcm_dashboard.py`)*
 
-### Method 2: The One-Click Batch Launcher (Windows Explorer)
-Alternatively, navigate to the `myogait` folder in Windows File Explorer and double-click **`run_dashboard.bat`**.
+Close and reopen PowerShell, then:
+
+```powershell
+git clone https://github.com/AdanMoallemi/myogait-private.git C:\myogait-private
+```
+
+A browser window asks you to sign in to GitHub the first time.
+
+**Option B — ZIP (no Git).** In the PC's browser, sign in to GitHub, open the repository, click
+**Code ▸ Download ZIP**, and extract it to `C:\myogait-private`. (A ZIP copy cannot update
+itself; for a new version, download the ZIP again.)
 
 ---
 
-### What Happens Next:
-- A local server will start.
-- Your default web browser (Chrome, Edge, Firefox, Safari) will automatically pop open to **`http://localhost:8501`**.
-- You will see the **MyoGait DCM Clinical Dashboard** with two tabs:
-  1. **🏃 Pipeline Analysis**
-  2. **📂 Clinical Database (CRF)**
+## 3. Step 2: One-Step Automated Setup
 
-> 💡 **To stop the dashboard**: Click inside the VS Code Terminal and press **`Ctrl + C`**.
+In the project folder, **double-click `install_windows_gpu.bat`**.
+
+If Windows shows *"Windows protected your PC"*, click **More info ▸ Run anyway** (this happens
+for files downloaded from the internet).
+
+The installer runs 7 steps on its own, about 10-20 minutes the first time:
+
+1. Detects the NVIDIA GPU and driver.
+2. Downloads `uv`, a small tool that installs Python and packages quickly.
+3. Creates a private Python 3.12 environment in the `.venv` folder.
+4. Installs PyTorch built for your GPU driver (CUDA 12.8, 12.6 or 11.8, chosen automatically,
+   then tested on the GPU; it falls back automatically if a build does not work).
+5. Installs myogait and the **exact package versions** of `requirements\dcm-lock.txt`, so every
+   installation computes identical numbers.
+6. Downloads the **Sapiens 2 Quick** pose model (myogait's default) and prepares it for the GPU.
+7. Creates a **"MyoGait DCM Dashboard"** shortcut on the desktop.
+
+Everything is logged to `install_log.txt` in the project folder. Running the installer again is
+always safe; it reuses what is already installed. If a step fails, the message says what to fix;
+then double-click the installer again.
+
+Options (from PowerShell in the project folder), rarely needed:
+`.\install_windows_gpu.bat -Cuda cu126` forces a PyTorch build;
+`-SkipModels` skips the model download.
+
+---
+
+## 4. Step 3: Launching the Dashboard
+
+**Double-click "MyoGait DCM Dashboard" on the desktop** (or `run_dashboard.bat` in the project
+folder). A black window opens and the dashboard appears in the browser at
+`http://127.0.0.1:8501`. **Keep the black window open** while you work; close it to stop the
+dashboard.
+
+The dashboard is only reachable from this PC (including over Remote Desktop), not from the rest
+of the network, so no firewall prompt appears. Videos up to 4 GB can be uploaded.
+
+---
+
+## 5. Step 4: Updating to a New Version
+
+- **Git copy (Option A):** double-click **`update_windows.bat`**. It downloads the new version
+  and refreshes the packages (fast: only what changed).
+- **ZIP copy (Option B):** download the ZIP again into a new folder and run
+  `install_windows_gpu.bat` there. Copy your `Output` folder (patients and results) across.
+
+Your patient database and all results live in the `Output` folder, which updates never touch.
 
 ---
 
@@ -225,30 +217,28 @@ Output/
                 └── skeleton_overlay.mp4       <-- Video with AI pose overlay
 ```
 
-### Viewing in VS Code:
-1. In the VS Code left sidebar, expand `Output` > `Patients` > `[Patient_ID]` > `[Timestamp]`.
-2. Right-click on `dcm_gait_report.pdf` or `summary.png` and click **Reveal in File Explorer** (Windows) or **Reveal in Finder** (Mac) to open and print.
+### Viewing the files:
+1. In Windows File Explorer, open the project folder, then `Output` > `Patients` > `[Patient_ID]` > `[Timestamp]`.
+2. Double-click `report\dcm_gait_report.pdf` or `plots\summary.png` to open and print. The dashboard also offers download buttons for the PDF, Excel workbook and stick-figure video.
 
 ---
 
 ## 9. Beginner Troubleshooting & FAQ
 
-### Q1: I get `'conda' is not recognized as an internal or external command` on Windows.
-- **Cause**: Miniconda was installed without adding the command line tools to your system path.
-- **Fix**: Open the **Anaconda Prompt** from your Windows Start Menu, navigate to the folder with `cd "C:\path\to\myogait"`, and run `install_windows_gpu.bat`.
+### Q1: The installer stopped with "SETUP FAILED".
+- Read the line above the message; `install_log.txt` in the project folder has every detail.
+- Most common causes: no internet connection (github.com, pypi.org and download.pytorch.org
+  must be reachable), a folder path that is too long (move the project to `C:\myogait-private`),
+  or not enough disk space. Fix it and double-click `install_windows_gpu.bat` again.
 
-### Q2: The terminal says `Port 8501 is already in use`.
-- **Cause**: An earlier session of the dashboard is still running in the background.
-- **Fix**: In the VS Code Terminal, press **`Ctrl + C`** to stop it, or run:
-  ```bash
-  streamlit run dcm_dashboard.py --server.port 8502
-  ```
+### Q2: The dashboard window says `Port 8501 is already in use`.
+- **Cause**: an earlier dashboard is still running (another black window is open).
+- **Fix**: close the other window, or open the dashboard that is already running at
+  `http://127.0.0.1:8501`.
 
-### Q3: How do I update the code if new changes are pushed to GitHub?
-- In the VS Code Terminal, simply type:
-  ```bash
-  git pull origin master
-  ```
+### Q3: The installer says it fell back to CPU, but the PC has an NVIDIA GPU.
+- Update the NVIDIA driver from [nvidia.com/drivers](https://www.nvidia.com/drivers), restart,
+  and run `install_windows_gpu.bat` again; it picks the matching PyTorch build automatically.
 
 ### Q4: I ran a video, but GPS (Gait Profile Score) says `N/A`.
 - **Cause**: no gait cycle passed myogait's cycle filters (or one side had too few heel strikes).
