@@ -1,4 +1,4 @@
-# MyoGait Clinical Gait Analysis Guide: Zero-to-Hero Manual
+# MyoGait Clinical Gait Analysis Guide
 
 Welcome to the **MyoGait Clinical Gait Analysis Platform**! This guide is written specifically for clinical researchers, clinicians, fellows, and students with **zero prior programming or coding experience**.
 
